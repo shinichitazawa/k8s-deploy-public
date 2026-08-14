@@ -1,0 +1,111 @@
+# GCP 用の代替自動スケール(人手ゼロ)。
+#
+# 背景: Cluster Autoscaler の GCE provider は、クラスタ内の全ノードの providerID を
+# gce:// 形式として解釈しようとするため、providerID が混在する self-hosted クラスタ
+# (k3s:// の CP や azure:/// の worker が同居)では scale-up が成立しない(2026-08 実測):
+#   - v1.32 / v1.34: "Failed to get node infos for groups: wrong id ..."
+#   - v1.35: node infos は通るが "could not create quotas tracker: ... wrong id ..."
+# そこで GCP だけは、CA-gcp と同じ keyless(WIF)配線を流用した CronJob で
+# MIG を時刻ベースに resize する。scale-from-0 の「反応性」は失うが、
+# 人手ゼロ・静的キーゼロは維持できる。
+#
+# 交換フロー(スクリプトが実装): projected SA token → STS token-exchange →
+# SA impersonation(generateAccessToken) → Compute API で IGM resize。
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gcp-mig-resize-script
+  namespace: cluster-ops
+data:
+  resize.py: |
+    import json, sys, urllib.request
+    size = sys.argv[1]
+    cfg = json.load(open('/etc/gcp/credential-config.json'))
+    jwt = open(cfg['credential_source']['file']).read().strip()
+    def post(url, data, hdr={}):
+        req = urllib.request.Request(url, data=json.dumps(data).encode(),
+              headers={'Content-Type': 'application/json', **hdr})
+        return json.load(urllib.request.urlopen(req, timeout=30))
+    fed = post(cfg['token_url'], {
+        'grantType': 'urn:ietf:params:oauth:grant-type:token-exchange',
+        'audience': cfg['audience'],
+        'scope': 'https://www.googleapis.com/auth/cloud-platform',
+        'requestedTokenType': 'urn:ietf:params:oauth:token-type:access_token',
+        'subjectTokenType': cfg['subject_token_type'],
+        'subjectToken': jwt})['access_token']
+    acc = post(cfg['service_account_impersonation_url'],
+        {'scope': ['https://www.googleapis.com/auth/cloud-platform']},
+        {'Authorization': f'Bearer {fed}'})['accessToken']
+    r = post(f'https://compute.googleapis.com/compute/v1/projects/<PROJECT_ID>/zones/asia-northeast1-a/instanceGroupManagers/gcp-cil-mig/resize?size={size}',
+        {}, {'Authorization': f'Bearer {acc}'})
+    print('resize ->', size, 'status:', r.get('status'))
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: gcp-mig-up
+  namespace: cluster-ops
+spec:
+  schedule: "38 14 * * *"
+  timeZone: Asia/Tokyo
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      ttlSecondsAfterFinished: 3600
+      template:
+        spec:
+          restartPolicy: Never
+          serviceAccountName: cluster-autoscaler-gcp
+          containers:
+            - name: resize
+              image: python:3.12-alpine
+              command: ["python", "/scripts/resize.py", "1"]
+              volumeMounts:
+                - {name: script, mountPath: /scripts}
+                - {name: gcp-cred-config, mountPath: /etc/gcp}
+                - {name: gcp-oidc-token, mountPath: /var/run/secrets/gcp}
+          volumes:
+            - {name: script, configMap: {name: gcp-mig-resize-script}}
+            - {name: gcp-cred-config, configMap: {name: cluster-autoscaler-gcp-wif}}
+            - name: gcp-oidc-token
+              projected:
+                sources:
+                  - serviceAccountToken:
+                      path: token
+                      expirationSeconds: 3600
+                      audience: https://iam.googleapis.com/projects/111111111111/locations/global/workloadIdentityPools/example-pool/providers/example-provider
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: gcp-mig-down
+  namespace: cluster-ops
+spec:
+  schedule: "5 15 * * *"
+  timeZone: Asia/Tokyo
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      ttlSecondsAfterFinished: 3600
+      template:
+        spec:
+          restartPolicy: Never
+          serviceAccountName: cluster-autoscaler-gcp
+          containers:
+            - name: resize
+              image: python:3.12-alpine
+              command: ["python", "/scripts/resize.py", "0"]
+              volumeMounts:
+                - {name: script, mountPath: /scripts}
+                - {name: gcp-cred-config, mountPath: /etc/gcp}
+                - {name: gcp-oidc-token, mountPath: /var/run/secrets/gcp}
+          volumes:
+            - {name: script, configMap: {name: gcp-mig-resize-script}}
+            - {name: gcp-cred-config, configMap: {name: cluster-autoscaler-gcp-wif}}
+            - name: gcp-oidc-token
+              projected:
+                sources:
+                  - serviceAccountToken:
+                      path: token
+                      expirationSeconds: 3600
+                      audience: https://iam.googleapis.com/projects/111111111111/locations/global/workloadIdentityPools/example-pool/providers/example-provider
