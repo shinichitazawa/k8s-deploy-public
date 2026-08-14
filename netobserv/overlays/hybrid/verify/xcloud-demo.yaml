@@ -1,0 +1,71 @@
+# クロスクラウド通信の自動検証フィクスチャ(人手ゼロ)。
+# KEDA cron が nginx を 0→1 に起こす → cloud=azure の pending → Cluster Autoscaler が
+# VMSS 0→1 → join 後に rpi0 の常駐 client からの curl が通り始める → NetObserv agent が
+# 両ノードで flow を観測する。end 時刻で KEDA が 0 に戻し、CA がノードを畳んで自動撤収。
+# ※ start/end は検証日時に合わせて書き換えて使う。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: xcloud-nginx
+  namespace: default
+  labels: {app: xcloud-nginx}
+spec:
+  replicas: 0
+  selector: {matchLabels: {app: xcloud-nginx}}
+  template:
+    metadata: {labels: {app: xcloud-nginx}}
+    spec:
+      nodeSelector: {cloud: azure}
+      # 注意: operator:Exists の包括 toleration は cordon(unschedulable) や NotReady の
+      # taint まで許容し、死にかけノードへスケジュールされて CA が発火しなくなる(実測)。
+      # 必ず対象クラウドの dedicated taint だけに絞る。
+      tolerations: [{key: dedicated, operator: Equal, value: azure-ops, effect: NoSchedule}]
+      containers:
+        - name: nginx
+          image: nginx:1.27-alpine
+          ports: [{containerPort: 80}]
+          resources: {requests: {cpu: 50m, memory: 32Mi}}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: xcloud-nginx, namespace: default}
+spec:
+  selector: {app: xcloud-nginx}
+  ports: [{port: 80}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: xcloud-client
+  namespace: default
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: xcloud-client}}
+  template:
+    metadata: {labels: {app: xcloud-client}}
+    spec:
+      nodeSelector: {kubernetes.io/hostname: raspberrypi-0}
+      tolerations: [{operator: Exists}]
+      containers:
+        - name: curl
+          image: curlimages/curl:8.10.1
+          command: ["sh","-c","while true; do curl -s -m 4 -o /dev/null -w \"$(date -u +%H:%M:%S) %{http_code}\\n\" http://xcloud-nginx.default.svc.cluster.local/ || true; sleep 3; done"]
+          resources: {requests: {cpu: 25m, memory: 16Mi}}
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: xcloud-nginx-cron
+  namespace: default
+spec:
+  scaleTargetRef: {name: xcloud-nginx}
+  minReplicaCount: 0
+  maxReplicaCount: 1
+  cooldownPeriod: 120
+  triggers:
+    - type: cron
+      metadata:
+        timezone: Asia/Tokyo
+        start: "50 11 * * *"
+        end: "30 14 * * *"
+        desiredReplicas: "1"

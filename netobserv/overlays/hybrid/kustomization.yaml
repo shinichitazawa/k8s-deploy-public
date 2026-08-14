@@ -1,0 +1,10 @@
+# rpi0-hybrid(マルチクラウド)用: 全ノードに agent を敷き、flow を stdout + Prometheus 両方へ出す。
+# - tolerations: operator:Exists で CP と cloud ノード(dedicated=<cloud>-ops)の両方に載せる
+# - arch 混在(arm64 rpi0/EC2 t4g, amd64 OCI)のため nodeSelector なし(:main は multi-arch)
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base
+patches:
+  - path: daemonset-patch.yaml
+  - path: configmap-patch.yaml

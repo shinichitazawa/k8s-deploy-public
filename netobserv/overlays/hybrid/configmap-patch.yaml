@@ -1,0 +1,27 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: flp-config
+  namespace: netobserv
+data:
+  # stdout(検証ログ用) + prom(節点間フローの可視化用)。
+  # FLP で Prometheus は write ではなく encode ステージ(encode/prom)である点に注意。
+  # メトリクスサーバは既定の :9090 で立つ(実測。encode 内の port 指定は効かなかった)。
+  # metrics は SrcAddr/DstAddr ラベルの flow カウンタ(小規模クラスタ前提。大規模では cardinality に注意)
+  flp-config.json: |
+    {
+      "pipeline": [
+        {"name": "writer", "follows": "preset-ingester"},
+        {"name": "prom", "follows": "preset-ingester"}
+      ],
+      "parameters": [
+        {"name": "writer", "write": {"type": "stdout"}},
+        {"name": "prom", "encode": {"type": "prom", "prom": {
+          "prefix": "netobserv_",
+          "metrics": [
+            {"name": "node_flows_total", "type": "counter", "valueKey": "",
+             "labels": ["SrcAddr", "DstAddr"], "filters": []}
+          ]
+        }}}
+      ]
+    }

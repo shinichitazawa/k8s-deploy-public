@@ -1,0 +1,23 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: netobserv-ebpf-agent
+  namespace: netobserv
+spec:
+  template:
+    metadata:
+      annotations:
+        # 既存 prometheus-server(kubernetes-pods job)に拾わせる
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+    spec:
+      tolerations:
+        - operator: Exists   # CP + dedicated=<cloud>-ops の全 taint を許容
+      # 小型クラウド VM のブート時は k3s+Cilium の初期化で CPU が飽和する。
+      # Cilium(hostNetwork の healthz :9879)が healthy になるまで agent の起動を遅らせ、
+      # ブート時のリソース競合で Cilium が起動ループに入るのを避ける。
+      initContainers:
+        - name: wait-cilium
+          image: busybox:1.36
+          command: ["sh","-c","until wget -q -T 3 -O /dev/null http://127.0.0.1:9879/healthz; do echo waiting cilium; sleep 10; done"]
+          resources: {requests: {cpu: 10m, memory: 8Mi}, limits: {cpu: 50m, memory: 32Mi}}
