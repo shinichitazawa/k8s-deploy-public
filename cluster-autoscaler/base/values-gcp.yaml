@@ -1,0 +1,77 @@
+# Cluster Autoscaler — GCP(Phase2)。MIG を Pending Pod で 0→N。issue #13。
+# ★ 2026-07 live 検証済み(CA が zonal MIG を keyless/WIF で管理・scale-from-0 テンプレート構築成功)。
+#   AWS(values-aws.yaml)のパターンを GCE 版に展開。
+#
+# 前提:
+#   1. providerID: gcp cloud-init の k3s agent に `--kubelet-arg=provider-id=gce://<project>/<zone>/<instance>`
+#      を追加(gcp/k3s-cilium-hybrid-node の user-data)。CA が MIG インスタンスと node を相関するため必須。
+#   2. keyless 認証: **GCP Workload Identity Federation**(pool rpi0-pool / provider rpi0-provider)。
+#      CA pod に projected SA token(audience=provider リソース名)+ GOOGLE_APPLICATION_CREDENTIALS=
+#      WIF credential-config.json をマウント(下記 extraVolumes)。GKE metadata server 不在のため
+#      SA アノテーション方式は使えず credential-config 方式。
+#      ※ project で `iamcredentials.googleapis.com` を有効化必須(WIF impersonation の generateAccessToken。
+#        未有効だと 403 SERVICE_DISABLED)。
+#   3. MIG は **zonal**(regional は GCE CA が URL 非対応)。node-template ラベル(cloud=gcp)。
+cloudProvider: gce
+
+# ★ zonal MIG を instanceGroups URL で明示指定。
+#   - GCE CA の URL parser は zonal 形式(.../zones/<zone>/instanceGroups/<name>)しか受け付けない
+#     (regional .../regions/… は "wrong url" で拒否。2026-07 live 検証)。→ MIG を zonal 化済み。
+#   - chart は `autoscalingGroups`(または autoDiscovery.*)が無いと Deployment を描画しない
+#     (extraArgs の node-group-auto-discovery だけでは Deployment が出ない)。よって
+#     autoscalingGroups で明示。URL の zone は gce.conf の local-zone / Terraform var.zone と一致必須。
+autoscalingGroups:
+  - name: https://www.googleapis.com/compute/v1/projects/st-datalakehouse/zones/asia-northeast1-a/instanceGroups/gcp-cil-mig
+    minSize: 0
+    maxSize: 2
+
+rbac:
+  create: true
+  serviceAccount:
+    create: true
+    name: cluster-autoscaler-gcp
+
+# keyless(WIF): projected token + credential-config を渡す
+extraVolumes:
+  - name: gcp-oidc-token
+    projected:
+      sources:
+        - serviceAccountToken:
+            path: token
+            audience: "https://iam.googleapis.com/projects/480825460332/locations/global/workloadIdentityPools/rpi0-pool/providers/rpi0-provider"
+            expirationSeconds: 3600
+  - name: gcp-cred-config
+    configMap:
+      name: cluster-autoscaler-gcp-wif   # credential-config.json(type=external_account)。configmap-gcp.yaml で codify
+  - name: gcp-cloudconfig
+    configMap:
+      name: ca-gcp-cloudconfig           # gce.conf(project-id + local-zone)。configmap-gcp.yaml で codify
+extraVolumeMounts:
+  - name: gcp-oidc-token
+    mountPath: /var/run/secrets/gcp
+    readOnly: true
+  - name: gcp-cred-config
+    mountPath: /etc/gcp
+    readOnly: true
+  - name: gcp-cloudconfig
+    mountPath: /etc/gce
+    readOnly: true
+extraEnv:
+  GOOGLE_APPLICATION_CREDENTIALS: /etc/gcp/credential-config.json
+
+extraArgs:
+  scale-down-enabled: true
+  scale-down-unneeded-time: 5m
+  expander: least-waste
+  # マルチ CA(AWS/GCP/Azure)が同一 ns で共存するため lease 名を分離(既定 cluster-autoscaler だと競合)
+  leader-elect-resource-name: cluster-autoscaler-gcp
+  cloud-config: /etc/gce/gce.conf
+  # node group は上の autoscalingGroups(instanceGroups URL)で明示。auto-discovery は使わない。
+
+nodeSelector:
+  node-role.kubernetes.io/control-plane: "true"
+tolerations:
+  - operator: Exists
+resources:
+  requests: { cpu: 20m, memory: 128Mi }
+  limits: { memory: 256Mi }

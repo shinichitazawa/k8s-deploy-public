@@ -1,0 +1,25 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Namespace: ai-platform は既存 (LiteLLM / kagent / etc. が居る場所)
+namespace: ai-platform
+
+labels:
+  - includeSelectors: false
+    pairs:
+      app.kubernetes.io/part-of: llm-ab-test
+
+resources:
+  # cluster-scoped Karpenter NodePool (namespace は無視される)
+  - nodepool-cpu-small.yaml
+  - nodepool-cpu-medium.yaml
+
+  # namespace-scoped: 4 model deployments + services + KEDA
+  - deployment-sarashina.yaml
+  - deployment-plamo.yaml
+  - deployment-phi4-mini.yaml
+  - deployment-gpt-oss.yaml
+  - services.yaml
+  - keda-scaledobjects.yaml
+  - judge-prompt-configmap.yaml
+  - judge-prompt-5way-configmap.yaml

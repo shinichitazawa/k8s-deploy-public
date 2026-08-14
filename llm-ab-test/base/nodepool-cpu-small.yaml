@@ -1,0 +1,44 @@
+# Karpenter NodePool for small CPU inference (3-4B models)
+# Used by: Sarashina2.1-3B, Phi-4-mini 3.8B
+# Instance: c7g.4xlarge (Graviton3 ARM, 16 vCPU / 32 GiB)
+apiVersion: karpenter.sh/v1
+kind: NodePool
+metadata:
+  name: llm-cpu-small
+spec:
+  template:
+    metadata:
+      labels:
+        workload: llm-cpu-small
+    spec:
+      nodeClassRef:
+        group: eks.amazonaws.com
+        kind: NodeClass
+        name: default
+      requirements:
+        - key: eks.amazonaws.com/instance-family
+          operator: In
+          values: ["c7g"]
+        - key: eks.amazonaws.com/instance-cpu
+          operator: In
+          values: ["16"]
+        - key: karpenter.sh/capacity-type
+          operator: In
+          values: ["spot", "on-demand"]
+        - key: kubernetes.io/arch
+          operator: In
+          values: ["arm64"]
+      taints:
+        - key: workload
+          value: llm-cpu-small
+          effect: NoSchedule
+      expireAfter: 168h
+  disruption:
+    consolidationPolicy: WhenEmpty
+    consolidateAfter: 60s
+    budgets:
+      - nodes: "1"
+        reasons: ["Empty"]
+  limits:
+    cpu: "32"
+    memory: 64Gi

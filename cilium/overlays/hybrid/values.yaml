@@ -1,0 +1,33 @@
+# Cilium hybrid overlay values — rpi0(CP) + マルチクラウド outpost(AWS/GCP/OCI/…) を
+# Tailscale 純オーバーレイで束ねた単一 k3s クラスタ向け。
+#
+# 稼働実体: cilium-cli v0.19.4 / chart(image) v1.19.3 で install 済み。
+#   投入/更新は kustomize ではなく cilium CLI で行う(../README.md 参照)。
+#   この values.yaml は「稼働 helm release の override 値」を code 化したもの。
+#
+# ★★★ 最重要 ★★★
+# k8sServiceHost は必ず rpi0 の "Tailscale IP" にする。LAN IP(192.0.2.17) にすると、
+# Tailscale 越しでしか繋がらない cloud ノードが kube-apiserver に到達できず、cilium の
+# config init コンテナが CrashLoop → 全 cloud ノード NotReady になる(2026-07-19 実障害)。
+# 詳細な事後分析は ../README.md「事後分析」節。
+cluster:
+  name: default
+
+kubeProxyReplacement: true
+
+# rpi0 の Tailscale IP (raspberrypi-0.example.ts.net)。LAN IP 厳禁。
+k8sServiceHost: 100.64.0.10
+k8sServicePort: 6443
+
+# Tailscale(WireGuard) の上に VXLAN オーバーレイ
+routingMode: tunnel
+tunnelProtocol: vxlan
+
+hubble:
+  relay:
+    enabled: true
+  ui:
+    enabled: true
+
+operator:
+  replicas: 1

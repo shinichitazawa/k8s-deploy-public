@@ -1,0 +1,16 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - serviceaccount.yaml
+  - configmap.yaml
+  - deployment.yaml
+  - service.yaml
+  - key-bootstrap-job.yaml
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: ai-platform
+      app.kubernetes.io/component: litellm-proxy
+      app.kubernetes.io/managed-by: argocd
+    includeSelectors: false

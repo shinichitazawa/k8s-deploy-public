@@ -1,0 +1,16 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: n8n
+
+resources:
+  - namespace.yaml
+  - deployment.yaml
+  - service.yaml
+  # 暗号鍵は Sealed Secrets(sealedsecret.yaml)。kubeseal で封緘済み(2026-08 rpi0-hybrid)。
+  # controller が復号して Secret `n8n-encryption-key` を生成 → deployment が参照。
+  - sealedsecret.yaml
+
+labels:
+  - pairs:
+      app.kubernetes.io/name: n8n

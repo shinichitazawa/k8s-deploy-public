@@ -1,0 +1,37 @@
+#!/bin/bash
+set -uxo pipefail
+
+NODE="${node_name}-$(hostname -s)"
+
+# Cluster Autoscaler 用: Azure IMDS から providerID(azure:///.../virtualMachines/<instanceId>)を組み立てる。
+# cloud-provider 無しの自前 k3s では providerID が付かず CA が VMSS インスタンスと node を相関できないため必須。
+# IMDS の compute/name は "<vmss>_<instanceId>" 形式なので末尾の instanceId を切り出す。
+IMDS="http://169.254.169.254/metadata/instance/compute"
+AZ_API="api-version=2021-02-01&format=text"
+SUB=$(curl -s -H "Metadata:true" "$IMDS/subscriptionId?$AZ_API")
+RG=$(curl -s -H "Metadata:true" "$IMDS/resourceGroupName?$AZ_API")
+VMSS=$(curl -s -H "Metadata:true" "$IMDS/vmScaleSetName?$AZ_API")
+VMNAME=$(curl -s -H "Metadata:true" "$IMDS/name?$AZ_API")
+INSTID="$${VMNAME##*_}"
+PROVIDER_ID="azure:///subscriptions/$SUB/resourceGroups/$RG/providers/Microsoft.Compute/virtualMachineScaleSets/$VMSS/virtualMachines/$INSTID"
+
+# 1. Tailscale 参加（純オーバーレイ。--accept-dns=true で CP の MagicDNS 解決）
+curl -fsSL https://tailscale.com/install.sh | sh
+tailscale up --accept-dns=true --ssh --hostname="$NODE" --authkey=${tailscale_authkey}
+for i in $(seq 1 20); do TSIP=$(tailscale ip -4 2>/dev/null | head -1); [ -n "$TSIP" ] && break; sleep 2; done
+
+# 2. CP(rpi0 MagicDNS)到達待ち
+for i in $(seq 1 40); do
+  (echo > /dev/tcp/${k3s_cp_host}/${k3s_cp_port}) >/dev/null 2>&1 && break
+  sleep 3
+done
+
+# 3. k3s agent join。label cloud=azure、--node-ip=$TSIP、taint でクラウド操作専有。
+#    --kubelet-arg=provider-id で CA が VMSS インスタンスと node を相関(上で IMDS から組立)。
+TAINT_ARG=""
+[ -n "${node_taint}" ] && TAINT_ARG="--node-taint ${node_taint}"
+curl -sfL https://get.k3s.io | \
+  INSTALL_K3S_VERSION=${k3s_version} \
+  K3S_URL=${k3s_url} \
+  K3S_TOKEN='${k3s_token}' \
+  INSTALL_K3S_EXEC="agent --node-name=$NODE --node-label=cloud=azure --node-label=role=azure-spot --node-ip=$TSIP --kubelet-arg=provider-id=$PROVIDER_ID $TAINT_ARG" sh -

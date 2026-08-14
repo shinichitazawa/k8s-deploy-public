@@ -1,0 +1,324 @@
+---
+# Source: workload-identity-webhook/templates/azure-wi-webhook-controller-manager-poddisruptionbudget.yaml
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  labels:
+    app: 'workload-identity-webhook'
+    azure-workload-identity.io/system: "true"
+    chart: 'workload-identity-webhook'
+    release: 'workload-identity-webhook'
+  name: azure-wi-webhook-controller-manager
+  namespace: 'cluster-ops'
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: 'workload-identity-webhook'
+      azure-workload-identity.io/system: "true"
+      chart: 'workload-identity-webhook'
+      release: 'workload-identity-webhook'
+---
+# Source: workload-identity-webhook/templates/azure-wi-webhook-admin-serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  labels:
+    app: 'workload-identity-webhook'
+    azure-workload-identity.io/system: "true"
+    chart: 'workload-identity-webhook'
+    release: 'workload-identity-webhook'
+  name: azure-wi-webhook-admin
+  namespace: 'cluster-ops'
+---
+# Source: workload-identity-webhook/templates/azure-wi-webhook-server-cert-secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  labels:
+    app: 'workload-identity-webhook'
+    azure-workload-identity.io/system: "true"
+    chart: 'workload-identity-webhook'
+    release: 'workload-identity-webhook'
+  name: azure-wi-webhook-server-cert
+  namespace: 'cluster-ops'
+---
+# Source: workload-identity-webhook/templates/azure-wi-webhook-config-configmap.yaml
+apiVersion: v1
+data:
+  AZURE_ENVIRONMENT: AzurePublicCloud
+  AZURE_TENANT_ID: 11111111-1111-1111-1111-111111111111
+kind: ConfigMap
+metadata:
+  labels:
+    app: 'workload-identity-webhook'
+    azure-workload-identity.io/system: "true"
+    chart: 'workload-identity-webhook'
+    release: 'workload-identity-webhook'
+  name: azure-wi-webhook-config
+  namespace: 'cluster-ops'
+---
+# Source: workload-identity-webhook/templates/azure-wi-webhook-manager-role-clusterrole.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app: 'workload-identity-webhook'
+    azure-workload-identity.io/system: "true"
+    chart: 'workload-identity-webhook'
+    release: 'workload-identity-webhook'
+  name: azure-wi-webhook-manager-role
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - serviceaccounts
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - admissionregistration.k8s.io
+  resources:
+  - mutatingwebhookconfigurations
+  verbs:
+  - get
+  - list
+  - update
+  - watch
+---
+# Source: workload-identity-webhook/templates/azure-wi-webhook-manager-rolebinding-clusterrolebinding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  labels:
+    app: 'workload-identity-webhook'
+    azure-workload-identity.io/system: "true"
+    chart: 'workload-identity-webhook'
+    release: 'workload-identity-webhook'
+  name: azure-wi-webhook-manager-rolebinding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: azure-wi-webhook-manager-role
+subjects:
+- kind: ServiceAccount
+  name: azure-wi-webhook-admin
+  namespace: 'cluster-ops'
+---
+# Source: workload-identity-webhook/templates/azure-wi-webhook-manager-role-role.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  labels:
+    app: 'workload-identity-webhook'
+    azure-workload-identity.io/system: "true"
+    chart: 'workload-identity-webhook'
+    release: 'workload-identity-webhook'
+  name: azure-wi-webhook-manager-role
+  namespace: 'cluster-ops'
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+---
+# Source: workload-identity-webhook/templates/azure-wi-webhook-manager-rolebinding-rolebinding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  labels:
+    app: 'workload-identity-webhook'
+    azure-workload-identity.io/system: "true"
+    chart: 'workload-identity-webhook'
+    release: 'workload-identity-webhook'
+  name: azure-wi-webhook-manager-rolebinding
+  namespace: 'cluster-ops'
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: azure-wi-webhook-manager-role
+subjects:
+- kind: ServiceAccount
+  name: azure-wi-webhook-admin
+  namespace: 'cluster-ops'
+---
+# Source: workload-identity-webhook/templates/azure-wi-webhook-webhook-service-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app: 'workload-identity-webhook'
+    azure-workload-identity.io/system: "true"
+    chart: 'workload-identity-webhook'
+    release: 'workload-identity-webhook'
+  name: azure-wi-webhook-webhook-service
+  namespace: 'cluster-ops'
+spec:
+  type: ClusterIP
+  ports:
+  - port: 443
+    targetPort: 9443
+  selector:
+    app: 'workload-identity-webhook'
+    azure-workload-identity.io/system: "true"
+    chart: 'workload-identity-webhook'
+    release: 'workload-identity-webhook'
+---
+# Source: workload-identity-webhook/templates/azure-wi-webhook-controller-manager-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: 'workload-identity-webhook'
+    azure-workload-identity.io/system: "true"
+    chart: 'workload-identity-webhook'
+    release: 'workload-identity-webhook'
+  name: azure-wi-webhook-controller-manager
+  namespace: 'cluster-ops'
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: 'workload-identity-webhook'
+      azure-workload-identity.io/system: "true"
+      chart: 'workload-identity-webhook'
+      release: 'workload-identity-webhook'
+  template:
+    metadata:
+      annotations:
+        {}
+      labels:
+        app: 'workload-identity-webhook'
+        azure-workload-identity.io/system: "true"
+        chart: 'workload-identity-webhook'
+        release: 'workload-identity-webhook'
+    spec:
+      affinity:
+        {}
+      containers:
+      - args:
+        - --log-level=info
+        - --metrics-addr=:8095
+        - --metrics-backend=prometheus
+        command:
+        - /manager
+        env:
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              apiVersion: v1
+              fieldPath: metadata.namespace
+        envFrom:
+        - configMapRef:
+            name: azure-wi-webhook-config
+        image: 'mcr.microsoft.com/oss/v2/azure/workload-identity/webhook:v1.6.0'
+        imagePullPolicy: 'IfNotPresent'
+        livenessProbe:
+          failureThreshold: 6
+          httpGet:
+            path: /healthz
+            port: healthz
+          initialDelaySeconds: 15
+          periodSeconds: 20
+        name: manager
+        ports:
+        - containerPort: 8095
+          name: metrics
+          protocol: TCP
+        - containerPort: 9443
+          name: webhook-server
+          protocol: TCP
+        - containerPort: 9440
+          name: healthz
+          protocol: TCP
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: healthz
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        resources:
+          limits:
+            cpu: 100m
+            memory: 30Mi
+          requests:
+            cpu: 100m
+            memory: 20Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+          runAsGroup: 65532
+          runAsNonRoot: true
+          runAsUser: 65532
+          seccompProfile:
+            type: RuntimeDefault
+        volumeMounts:
+        - mountPath: /certs
+          name: cert
+          readOnly: true
+      nodeSelector:
+        kubernetes.io/os: linux
+      priorityClassName: system-cluster-critical
+      serviceAccountName: azure-wi-webhook-admin
+      tolerations:
+        []
+      topologySpreadConstraints:
+        []
+      volumes:
+      - name: cert
+        secret:
+          defaultMode: 420
+          secretName: azure-wi-webhook-server-cert
+---
+# Source: workload-identity-webhook/templates/azure-wi-webhook-mutating-webhook-configuration-mutatingwebhookconfiguration.yaml
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  annotations:
+    {}
+  labels:
+    app: 'workload-identity-webhook'
+    azure-workload-identity.io/system: "true"
+    chart: 'workload-identity-webhook'
+    release: 'workload-identity-webhook'
+  name: azure-wi-webhook-mutating-webhook-configuration
+webhooks:
+- admissionReviewVersions:
+  - v1
+  - v1beta1
+  clientConfig:
+    service:
+      name: azure-wi-webhook-webhook-service
+      namespace: 'cluster-ops'
+      path: /mutate-v1-pod
+  failurePolicy: Fail
+  matchPolicy: Equivalent
+  name: mutation.azure-workload-identity.io
+  namespaceSelector:
+    {}
+  objectSelector:
+    matchLabels:
+      azure.workload.identity/use: "true"
+  reinvocationPolicy: IfNeeded
+  rules:
+  - apiGroups:
+    - ""
+    apiVersions:
+    - v1
+    operations:
+    - CREATE
+    resources:
+    - pods
+  sideEffects: None

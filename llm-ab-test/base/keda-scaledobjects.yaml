@@ -1,0 +1,79 @@
+# KEDA scale-to-zero for 4 model deployments
+# trigger: LiteLLM Prometheus metrics でリクエスト到達を検知 → 1 へ scale up
+#         5-10 分 idle → 0 へ scale down → consolidateAfter で node 削除
+# cold start: Karpenter node 起動 60-120s + model pull/load 30-90s ≒ 1.5-3 min
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: model-sarashina-scaler
+spec:
+  scaleTargetRef:
+    name: model-sarashina
+  minReplicaCount: 0
+  maxReplicaCount: 1
+  pollingInterval: 30
+  cooldownPeriod: 600          # 10 分 idle で 0 へ
+  triggers:
+    - type: prometheus
+      metadata:
+        serverAddress: http://prometheus-server.monitoring.svc.cluster.local:80
+        threshold: "1"
+        query: |
+          sum(rate(litellm_requests_total{model=~"local-sarashina.*"}[2m])) > 0
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: model-plamo-scaler
+spec:
+  scaleTargetRef:
+    name: model-plamo
+  minReplicaCount: 0
+  maxReplicaCount: 1
+  pollingInterval: 30
+  cooldownPeriod: 600
+  triggers:
+    - type: prometheus
+      metadata:
+        serverAddress: http://prometheus-server.monitoring.svc.cluster.local:80
+        threshold: "1"
+        query: |
+          sum(rate(litellm_requests_total{model=~"local-plamo.*"}[2m])) > 0
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: model-phi4-mini-scaler
+spec:
+  scaleTargetRef:
+    name: model-phi4-mini
+  minReplicaCount: 0
+  maxReplicaCount: 1
+  pollingInterval: 30
+  cooldownPeriod: 600
+  triggers:
+    - type: prometheus
+      metadata:
+        serverAddress: http://prometheus-server.monitoring.svc.cluster.local:80
+        threshold: "1"
+        query: |
+          sum(rate(litellm_requests_total{model=~"local-phi4-mini.*"}[2m])) > 0
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: model-gpt-oss-scaler
+spec:
+  scaleTargetRef:
+    name: model-gpt-oss
+  minReplicaCount: 0
+  maxReplicaCount: 1
+  pollingInterval: 30
+  cooldownPeriod: 600
+  triggers:
+    - type: prometheus
+      metadata:
+        serverAddress: http://prometheus-server.monitoring.svc.cluster.local:80
+        threshold: "1"
+        query: |
+          sum(rate(litellm_requests_total{model=~"local-gpt-oss.*"}[2m])) > 0

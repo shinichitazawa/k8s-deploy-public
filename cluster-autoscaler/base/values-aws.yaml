@@ -1,0 +1,45 @@
+# Cluster Autoscaler — AWS(Phase1)。Pending Pod を検知して ASG を 0→N に増減。
+# issue #13。keyless(IRSA #7)で AWS 権限を付与、cluster-ops ns で稼働。
+#
+# ★ 前提(未充足だと機能しない):
+#   1. IAM ロール cluster-autoscaler-role(IRSA trust: sub=cluster-ops:cluster-autoscaler)+
+#      権限(autoscaling Describe/SetDesiredCapacity、ec2 Describe)。※ AWS 側で作成要。
+#   2. 対象 ASG に auto-discovery タグ: k8s.io/cluster-autoscaler/enabled=true /
+#      k8s.io/cluster-autoscaler/rpi0-hybrid=owned(Terraform 側で付与するのが正)。
+#   3. ★ **k3s ノードに AWS providerID が必要**。cloud-provider が無い自前 k3s では既定で付かず、
+#      CA が ASG インスタンスと k8s node を対応付けられない。cloud-init の k3s agent に
+#      `--kubelet-arg=provider-id=aws:///<az>/<instance-id>`(IMDS から取得)を追加すること
+#      (ec2/k3s-cilium-hybrid-node の user-data 修正)。README 参照。
+cloudProvider: aws
+awsRegion: ap-northeast-1
+
+autoDiscovery:
+  clusterName: rpi0-hybrid          # ASG タグ k8s.io/cluster-autoscaler/<name>=owned と一致
+
+rbac:
+  create: true
+  serviceAccount:
+    create: true
+    name: cluster-autoscaler
+    annotations:
+      # pod-identity-webhook が AWS_ROLE_ARN + projected token を注入(keyless)
+      eks.amazonaws.com/role-arn: arn:aws:iam::111111111111:role/cluster-autoscaler-role
+
+extraArgs:
+  scale-down-enabled: true
+  scale-down-unneeded-time: 5m       # idle 5分でスケールダウン(コスト最優先)
+  scale-down-delay-after-add: 5m
+  balance-similar-node-groups: true
+  expander: least-waste
+  skip-nodes-with-system-pods: false # rpi0 に system pod があるが cloud node の判断には無関係
+  # 自前 k3s では node group の min/max を ASG 側(min=0)に委ねる
+
+# CA 自体は安定した control-plane(rpi0, arm64)で動かす。image は multi-arch。
+nodeSelector:
+  node-role.kubernetes.io/control-plane: "true"
+tolerations:
+  - operator: Exists
+
+resources:
+  requests: { cpu: 20m, memory: 128Mi }
+  limits: { memory: 256Mi }

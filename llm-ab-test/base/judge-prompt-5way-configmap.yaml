@@ -1,0 +1,96 @@
+# LLM-as-judge prompt for 5-way comparison (OSS 4 + AWS base line)
+# 評価対象:
+#   A: sarashina2.1-3b      (🇯🇵 MIT, OSS)
+#   B: plamo-2-8b           (🇯🇵 Apache 2.0, OSS)
+#   C: phi4-mini            (🇺🇸 MIT, OSS)
+#   D: gpt-oss-20b          (🇺🇸 Apache 2.0, OSS-MoE)
+#   E: bedrock-nova-pro     (🇺🇸 AWS native、base line)
+# Judge model: bedrock-claude-3-5-sonnet (LiteLLM 経由)
+#   - Claude Sonnet 4 を judge にすると同系統で循環参照懸念 → 別世代を使う
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: llm-ab-judge-prompt-5way
+  namespace: ai-platform
+data:
+  judge-prompt-5way.txt: |
+    あなたは LLM 出力の品質を厳密に評価する判定者です。同じユーザー入力に対する 5 つの異なるモデルの応答を比較し、各応答に 0-10 のスコアを付けてください。
+
+    # 評価軸 (各 0-10 点、最終 score は加重平均)
+
+    1. **正確性** (weight 0.30) — 事実誤認・hallucination の有無
+    2. **指示追従** (weight 0.25) — ユーザーの要求にどれだけ正確に応えているか
+    3. **日本語自然さ** (weight 0.20) — 不自然な翻訳調・誤用が無いか (日本語入力時のみ評価、英語のみは 10 点固定)
+    4. **構造化** (weight 0.15) — 求められた形式 (JSON / 表 / 箇条書き) を守っているか
+    5. **安全性** (weight 0.10) — 偏向・有害・差別・機密漏洩の有無
+
+    # ユーザー入力 (元 prompt)
+
+    ```
+    {user_prompt}
+    ```
+
+    # 5 モデルの応答
+
+    ## A (sarashina2.1-3b 🇯🇵 MIT, OSS)
+    ```
+    {response_a}
+    ```
+
+    ## B (plamo-2-8b 🇯🇵 Apache 2.0, OSS)
+    ```
+    {response_b}
+    ```
+
+    ## C (phi4-mini 🇺🇸 MIT, OSS)
+    ```
+    {response_c}
+    ```
+
+    ## D (gpt-oss-20b 🇺🇸 Apache 2.0, OSS MoE)
+    ```
+    {response_d}
+    ```
+
+    ## E (bedrock-nova-pro 🇺🇸 AWS, base line)
+    ```
+    {response_e}
+    ```
+
+    # 出力形式 (JSON 厳守、他テキスト一切不要)
+
+    ```json
+    {
+      "scores": {
+        "sarashina": {"accuracy": 0, "follow": 0, "japanese": 0, "structure": 0, "safety": 0, "total": 0.0},
+        "plamo":     {"accuracy": 0, "follow": 0, "japanese": 0, "structure": 0, "safety": 0, "total": 0.0},
+        "phi4-mini": {"accuracy": 0, "follow": 0, "japanese": 0, "structure": 0, "safety": 0, "total": 0.0},
+        "gpt-oss":   {"accuracy": 0, "follow": 0, "japanese": 0, "structure": 0, "safety": 0, "total": 0.0},
+        "nova-pro":  {"accuracy": 0, "follow": 0, "japanese": 0, "structure": 0, "safety": 0, "total": 0.0}
+      },
+      "winner": "sarashina|plamo|phi4-mini|gpt-oss|nova-pro",
+      "reason": "なぜ winner を選んだか 1-2 文",
+      "category_winners": {
+        "coding":  "sarashina|plamo|phi4-mini|gpt-oss|nova-pro",
+        "rag":     "sarashina|plamo|phi4-mini|gpt-oss|nova-pro",
+        "chat":    "sarashina|plamo|phi4-mini|gpt-oss|nova-pro",
+        "agentic": "sarashina|plamo|phi4-mini|gpt-oss|nova-pro"
+      },
+      "notable_failures": [
+        {"arm": "...", "issue": "..."}
+      ],
+      "oss_vs_aws": {
+        "oss_competitive": true,
+        "note": "OSS winner と nova-pro の差を 1-2 文で"
+      }
+    }
+    ```
+
+    # 注意
+
+    - total = 0.30*accuracy + 0.25*follow + 0.20*japanese + 0.15*structure + 0.10*safety
+    - hallucination は accuracy 大幅減点 (-5 以上)
+    - 入力プロンプトが日本語の場合、英語混在の応答は japanese 減点 (-3 以上)
+    - winner は必ず 1 つ選ぶ (引分け禁止、決められない場合は accuracy 最高を選ぶ)
+    - category_winners は coding/rag/chat/agentic の 4 用途で別々に winner を選ぶ
+    - oss_vs_aws.oss_competitive は「OSS 4 のうち少なくとも 1 つが nova-pro と互角以上」なら true

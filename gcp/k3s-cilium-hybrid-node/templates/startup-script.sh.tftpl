@@ -1,0 +1,33 @@
+#!/bin/bash
+set -uxo pipefail
+
+# インスタンス毎に一意な node 名（MIG 置換で node-password 衝突を避ける）
+NODE="${node_name}-$(hostname -s)"
+
+# Cluster Autoscaler 用: metadata から providerID(gce://<project>/<zone>/<instance>)を組み立てる。
+# cloud-provider 無しの自前 k3s では providerID が付かず CA が MIG インスタンスと node を相関できないため必須。
+MD="http://metadata.google.internal/computeMetadata/v1"
+ZONE=$(curl -s -H "Metadata-Flavor: Google" $MD/instance/zone | awk -F/ '{print $NF}')
+INAME=$(curl -s -H "Metadata-Flavor: Google" $MD/instance/name)
+PROJECT=$(curl -s -H "Metadata-Flavor: Google" $MD/project/project-id)
+
+# 1. Tailscale 参加（純オーバーレイ。--accept-dns=true で CP の MagicDNS を解決）
+curl -fsSL https://tailscale.com/install.sh | sh
+tailscale up --accept-dns=true --ssh --hostname="$NODE" --authkey=${tailscale_authkey}
+for i in $(seq 1 20); do TSIP=$(tailscale ip -4 2>/dev/null | head -1); [ -n "$TSIP" ] && break; sleep 2; done
+
+# 2. CP(rpi0 の MagicDNS)に到達できるまで待つ
+for i in $(seq 1 40); do
+  (echo > /dev/tcp/${k3s_cp_host}/${k3s_cp_port}) >/dev/null 2>&1 && break
+  sleep 3
+done
+
+# 3. k3s agent join。label cloud=gcp（Kro GcpWorkload の nodeSelector に対応）、
+#    --node-ip=$TSIP で Cilium VXLAN 端点を tailnet に、taint でクラウド操作専有。
+TAINT_ARG=""
+[ -n "${node_taint}" ] && TAINT_ARG="--node-taint ${node_taint}"
+curl -sfL https://get.k3s.io | \
+  INSTALL_K3S_VERSION=${k3s_version} \
+  K3S_URL=${k3s_url} \
+  K3S_TOKEN='${k3s_token}' \
+  INSTALL_K3S_EXEC="agent --node-name=$NODE --node-label=cloud=gcp --node-label=role=gcp-spot --node-ip=$TSIP --kubelet-arg=provider-id=gce://$PROJECT/$ZONE/$INAME $TAINT_ARG" sh -

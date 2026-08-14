@@ -1,0 +1,34 @@
+# kustomization.yaml
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: tailscale
+resources:
+- namespace.yaml
+- secret.yaml
+- clusterrole.yaml
+
+helmCharts:
+- name: tailscale-operator
+  namespace: tailscale
+  repo: https://pkgs.tailscale.com/helmcharts
+  releaseName: tailscale-operator
+  version: 1.78.3
+  includeCRDs: true
+  # valuesInline:
+  #   oauth:
+  #     existingSecret: tailscale-auth
+  valuesInline:
+    operatorConfig:
+      defaultTags:
+        - "tag:k8s-operator"
+      hostname: "tailscale-operator"
+    proxyConfig:
+      defaultTags: "tag:k8s"
+    apiServerProxyConfig:
+      mode: "true"
+    # oauth は existingSecret 経由で参照する。実値はコミットしない。
+    # external-secrets/ で tailscale-auth Secret を作る。
+    oauth:
+      existingSecret: tailscale-auth
+

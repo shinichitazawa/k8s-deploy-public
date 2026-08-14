@@ -1,0 +1,72 @@
+# Model #2: PLaMo 2 8B Instruct
+#   開発元: Preferred Networks (🇯🇵), License: Apache 2.0, サイズ: 8B
+#   gate なし、Apache 2.0 で完全自由
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: model-plamo
+  labels:
+    app.kubernetes.io/name: model-plamo
+    ab-model: plamo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      ab-model: plamo
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        ab-model: plamo
+        app.kubernetes.io/name: model-plamo
+    spec:
+      nodeSelector:
+        workload: llm-cpu-medium
+      tolerations:
+        - key: workload
+          operator: Equal
+          value: llm-cpu-medium
+          effect: NoSchedule
+      containers:
+        - name: ollama
+          image: ollama/ollama:0.30.11
+          ports:
+            - containerPort: 11434
+              name: http
+          env:
+            - name: OLLAMA_HOST
+              value: "0.0.0.0:11434"
+            - name: OLLAMA_KEEP_ALIVE
+              value: "1h"
+            - name: OLLAMA_NUM_PARALLEL
+              value: "2"
+            - name: OLLAMA_MAX_LOADED_MODELS
+              value: "1"
+          resources:
+            requests:
+              cpu: "24"
+              memory: "48Gi"
+            limits:
+              cpu: "32"
+              memory: "60Gi"
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              ollama serve &
+              sleep 5
+              ollama pull hf.co/mmnga/plamo-2-8b-instruct-gguf:Q4_K_M
+              wait
+          volumeMounts:
+            - name: ollama-data
+              mountPath: /root/.ollama
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 11434
+            initialDelaySeconds: 90
+            periodSeconds: 10
+      volumes:
+        - name: ollama-data
+          emptyDir:
+            sizeLimit: 20Gi

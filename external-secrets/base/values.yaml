@@ -1,0 +1,36 @@
+# External Secrets Operator (ESO) v0.10+
+# https://external-secrets.io/
+
+installCRDs: true
+
+serviceAccount:
+  create: true
+  # EKS Hybrid Nodes 検証時に IRSA を有効化
+  # annotations:
+  #   eks.amazonaws.com/role-arn: arn:aws:iam::<ACCOUNT>:role/<ROLE>
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 200m
+    memory: 256Mi
+
+webhook:
+  resources:
+    requests:
+      cpu: 25m
+      memory: 32Mi
+    limits:
+      cpu: 100m
+      memory: 128Mi
+
+certController:
+  resources:
+    requests:
+      cpu: 25m
+      memory: 32Mi
+    limits:
+      cpu: 100m
+      memory: 128Mi

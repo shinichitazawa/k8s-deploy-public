@@ -1,0 +1,20 @@
+# n8n UI を tailnet に HTTPS 公開する Tailscale Ingress。
+# multi-k3s ガイドライン §7 / memory tailnet-ui-expose-ingress に従い、L3 expose 注釈ではなく
+# Ingress(ingressClassName: tailscale)を使う。operator が MagicDNS 名と TLS 証明書を付与し、
+#   https://n8n.example.ts.net で 443 終端 → backend Service n8n:80 (=pod:5678) に転送。
+# tls.hosts[0] が tailnet の hostname になる(→ n8n.<tailnet>.ts.net)。
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: n8n
+  namespace: n8n
+spec:
+  ingressClassName: tailscale
+  tls:
+    - hosts:
+        - n8n
+  defaultBackend:
+    service:
+      name: n8n
+      port:
+        number: 80

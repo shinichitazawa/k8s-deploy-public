@@ -1,0 +1,38 @@
+# KEDA Helm values (minimal for cluster-level scale-to-zero)
+# Reference: https://github.com/kedacore/charts/blob/main/keda/values.yaml
+
+crds:
+  install: true
+
+# Operator (controller) - watches ScaledObject CR and scales target Deployment
+operator:
+  replicaCount: 1
+  resources:
+    requests: { cpu: "100m", memory: "128Mi" }
+    limits:   { cpu: "1",    memory: "1Gi"  }
+
+# Metrics adapter - exposes external metrics API for HPA integration
+metricsServer:
+  replicaCount: 1
+  resources:
+    requests: { cpu: "100m", memory: "128Mi" }
+    limits:   { cpu: "1",    memory: "1Gi"  }
+
+# Webhooks - validates ScaledObject CR
+webhooks:
+  enabled: true
+  resources:
+    requests: { cpu: "50m",  memory: "64Mi"  }
+    limits:   { cpu: "500m", memory: "256Mi" }
+
+# Prometheus metrics expose (既存 prometheus が scrape する)
+prometheus:
+  metricServer:
+    enabled: true
+  operator:
+    enabled: true
+  webhooks:
+    enabled: true
+
+# 安全: cluster-wide watch (default), デフォルト namespace = keda
+watchNamespace: ""

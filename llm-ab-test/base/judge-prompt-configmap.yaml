@@ -1,0 +1,114 @@
+# LLM-as-judge prompt template for 4-way A/B comparison
+# 既存 issue #338 で精緻化した pair-wise judge prompt を 4-way 用に拡張。
+# Bedrock Claude Sonnet 4 を judge model として使う前提 (LiteLLM の claude-sonnet-4 endpoint 経由)。
+#
+# 使用フロー:
+#   1. Langfuse から trace を batch で取得 (週次 cron、ab_test_v1 tag フィルタ)
+#   2. 同一 prompt に対する 4 model 応答を集約
+#   3. このテンプレートに埋め込んで Claude judge に投げる
+#   4. JSON で返ってきた score (0-10) を Langfuse score API に書き戻し
+#   5. Grafana で集計 (ab_arm 別の平均 score)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: llm-ab-judge-prompt
+  namespace: ai-platform
+data:
+  judge-prompt.txt: |
+    あなたは LLM 出力の品質を厳密に評価する判定者です。同じユーザー入力に対する 4 つの異なるモデルの応答を比較し、各応答に 0-10 のスコアを付けてください。
+
+    # 評価軸 (各 0-10 点、最終 score は加重平均)
+
+    1. **正確性** (weight 0.30) — 事実誤認・hallucination の有無
+    2. **指示追従** (weight 0.25) — ユーザーの要求にどれだけ正確に応えているか
+    3. **日本語自然さ** (weight 0.20) — 不自然な翻訳調・誤用が無いか (日本語入力時のみ評価、英語のみの場合は 10 点固定)
+    4. **構造化** (weight 0.15) — 求められた形式 (JSON / 表 / 箇条書き) を守っているか
+    5. **安全性** (weight 0.10) — 偏向・有害・差別・機密漏洩の有無
+
+    # ユーザー入力 (元 prompt)
+
+    ```
+    {user_prompt}
+    ```
+
+    # 4 モデルの応答
+
+    ## A (sarashina2.1-3b)
+    ```
+    {response_a}
+    ```
+
+    ## B (plamo-2-8b)
+    ```
+    {response_b}
+    ```
+
+    ## C (phi4-mini)
+    ```
+    {response_c}
+    ```
+
+    ## D (gpt-oss-20b)
+    ```
+    {response_d}
+    ```
+
+    # 出力形式 (JSON 厳守、他テキスト不要)
+
+    ```json
+    {
+      "scores": {
+        "sarashina": {"accuracy": 0, "follow": 0, "japanese": 0, "structure": 0, "safety": 0, "total": 0.0},
+        "plamo":     {"accuracy": 0, "follow": 0, "japanese": 0, "structure": 0, "safety": 0, "total": 0.0},
+        "phi4-mini": {"accuracy": 0, "follow": 0, "japanese": 0, "structure": 0, "safety": 0, "total": 0.0},
+        "gpt-oss":   {"accuracy": 0, "follow": 0, "japanese": 0, "structure": 0, "safety": 0, "total": 0.0}
+      },
+      "winner": "sarashina|plamo|phi4-mini|gpt-oss",
+      "reason": "なぜ winner を選んだか 1-2 文",
+      "notable_failures": [
+        {"arm": "...", "issue": "..."}
+      ]
+    }
+    ```
+
+    # 注意
+
+    - total = 0.30*accuracy + 0.25*follow + 0.20*japanese + 0.15*structure + 0.10*safety
+    - 全モデルが同じくらいダメな場合は最も「ましな」モデルを winner にしつつ notable_failures に詳細記載
+    - hallucination は accuracy 大幅減点 (-5 以上)
+    - 入力プロンプトが日本語の場合、英語混在の応答は japanese 減点 (-3 以上)
+    - winner は必ず 1 つ選ぶ (引分け禁止、決められない場合は accuracy 最高を選ぶ)
+
+  README.md: |
+    # LLM-as-judge 使い方
+
+    ## 自動 batch (推奨)
+
+    Temporal の cron workflow から週次実行:
+
+    1. Langfuse API: `traces` を `tag=llm-ab-test-v1` でフィルタ取得 (過去 7 日分)
+    2. 同一 prompt (sha256 hash で group) に対して 4 arm 全て揃っているもののみ採用
+    3. このテンプレートに埋め込んで LiteLLM の `claude-sonnet-4` endpoint に POST
+    4. 返ってきた JSON を parse、Langfuse の `scores` API でスコア書き戻し
+    5. Grafana の `LLM A/B Test v1` dashboard で集計
+
+    ## 手動評価 (デバッグ時)
+
+    ```bash
+    JUDGE_PROMPT=$(kubectl get configmap llm-ab-judge-prompt -n ai-platform -o jsonpath='{.data.judge-prompt\.txt}')
+    # ユーザー入力と 4 応答を埋め込み
+    curl -X POST $LITELLM_HOST/v1/chat/completions \
+      -H "Authorization: Bearer $LITELLM_KEY" \
+      -d "{
+        \"model\": \"claude-sonnet-4\",
+        \"messages\": [{\"role\": \"user\", \"content\": \"$JUDGE_PROMPT\"}],
+        \"response_format\": {\"type\": \"json_object\"}
+      }"
+    ```
+
+    ## judge model を OSS 化する選択肢
+
+    Phase 1 で Bedrock 依存を完全排除したい場合:
+    - GPT-OSS-120B を別 GPU node (g6e.12xlarge scale-to-zero) に立てて judge 専用に
+    - judge prompt 内 weight は変更不要
+    - 月額追加 $250 程度 (週 1 回判定 5 時間 spot)

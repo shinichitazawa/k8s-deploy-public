@@ -1,0 +1,76 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: litellm-proxy
+  namespace: ai-platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: litellm-proxy
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: litellm-proxy
+    spec:
+      serviceAccountName: litellm-proxy
+      containers:
+        - name: litellm
+          image: ghcr.io/berriai/litellm:main-stable
+          imagePullPolicy: IfNotPresent
+          args:
+            - "--config"
+            - "/app/config/config.yaml"
+            - "--port"
+            - "4000"
+            - "--num_workers"
+            - "1"
+            - "--detailed_debug"
+          ports:
+            - name: http
+              containerPort: 4000
+              protocol: TCP
+          env:
+            - name: AWS_REGION
+              value: ap-northeast-1
+            - name: LITELLM_LOG
+              value: INFO
+            # Public URL for /ui redirect (overlay 上書き)
+            - name: PROXY_BASE_URL
+              value: "https://litellm.example.com"
+            - name: STORE_MODEL_IN_DB
+              value: "True"
+          envFrom:
+            - secretRef:
+                name: litellm-db    # DATABASE_URL
+                optional: true
+            - secretRef:
+                name: litellm-auth  # LITELLM_MASTER_KEY, UI_USERNAME, UI_PASSWORD
+                optional: true
+          volumeMounts:
+            - name: config
+              mountPath: /app/config
+              readOnly: true
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              cpu: 1000m
+              memory: 2Gi
+          livenessProbe:
+            httpGet:
+              path: /health/liveliness
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /health/readiness
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+      volumes:
+        - name: config
+          configMap:
+            name: litellm-config

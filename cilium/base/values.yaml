@@ -1,0 +1,38 @@
+# Cilium v1.17.x base values
+# EKS Hybrid Nodes 移行後は cilium/overlays/hybrid/ で k8sServiceHost 等を上書き
+cluster:
+  name: k8s-deploy
+  id: 1
+
+kubeProxyReplacement: true
+bpf:
+  masquerade: true
+
+routingMode: tunnel
+tunnelProtocol: vxlan
+
+ipam:
+  mode: cluster-pool
+  operator:
+    clusterPoolIPv4PodCIDRList: ["10.244.0.0/16"]
+    clusterPoolIPv4MaskSize: 24
+
+encryption:
+  enabled: false
+  type: wireguard
+  nodeEncryption: true
+
+hubble:
+  enabled: true
+  relay:
+    enabled: true
+  ui:
+    enabled: false
+
+operator:
+  replicas: 1
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi

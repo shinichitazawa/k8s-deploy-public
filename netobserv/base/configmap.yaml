@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: flp-config
+  namespace: netobserv
+data:
+  flp-config.json: |
+    {
+      "pipeline": [
+        {"name": "writer", "follows": "preset-ingester"}
+      ],
+      "parameters": [
+        {"name": "writer", "write": {"type": "stdout"}}
+      ]
+    }

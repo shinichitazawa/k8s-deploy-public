@@ -1,0 +1,17 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: kro-system
+
+resources:
+  - namespace.yaml
+  - rgd-simple-webapp.yaml
+  - rgd-app-cloud-access.yaml   # ACK 導入後に有効化(アプリの S3/IAM を keyless で宣言)
+
+helmCharts:
+  - name: kro
+    repo: oci://registry.k8s.io/kro/charts
+    version: 0.9.2
+    releaseName: kro
+    namespace: kro-system
+    valuesFile: values.yaml

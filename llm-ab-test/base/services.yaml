@@ -1,0 +1,53 @@
+# OpenAI 互換 endpoint を namespace 内に expose
+# LiteLLM proxy がこの ClusterIP に対して openai/... として呼び出す
+apiVersion: v1
+kind: Service
+metadata:
+  name: model-sarashina
+spec:
+  type: ClusterIP
+  selector:
+    ab-model: sarashina
+  ports:
+    - name: http
+      port: 80
+      targetPort: 11434
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: model-plamo
+spec:
+  type: ClusterIP
+  selector:
+    ab-model: plamo
+  ports:
+    - name: http
+      port: 80
+      targetPort: 11434
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: model-phi4-mini
+spec:
+  type: ClusterIP
+  selector:
+    ab-model: phi4-mini
+  ports:
+    - name: http
+      port: 80
+      targetPort: 11434
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: model-gpt-oss
+spec:
+  type: ClusterIP
+  selector:
+    ab-model: gpt-oss
+  ports:
+    - name: http
+      port: 80
+      targetPort: 11434

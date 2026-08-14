@@ -1,0 +1,22 @@
+# Kro v0.8.5 helm values
+# https://github.com/kubernetes-sigs/kro
+image:
+  repository: ghcr.io/kro-run/kro/controller
+  tag: "0.8.5"
+
+# RGD 削除時に CRD まで道連れにしない
+allowCRDDeletion: false
+
+# 個人 Pi なので並列度を絞る
+resourceGraphDefinitionConcurrentReconciles: 1
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 200m
+    memory: 256Mi
+
+metricsService:
+  enabled: true

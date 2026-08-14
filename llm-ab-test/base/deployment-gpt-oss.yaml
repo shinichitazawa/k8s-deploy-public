@@ -1,0 +1,74 @@
+# Model #4: GPT-OSS-20B (MoE)
+#   開発元: OpenAI (🇺🇸), License: Apache 2.0
+#   サイズ: 21B total / 3.6B active (MoE)、context 未公表
+#   MXFP4 量子化済、CPU でも active 3.6B のみ計算で実用速度
+#   vLLM-CPU で動かす (AWQ/GPTQ いずれかが必要、ここでは GGUF Q4_K_M を ollama で)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: model-gpt-oss
+  labels:
+    app.kubernetes.io/name: model-gpt-oss
+    ab-model: gpt-oss
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      ab-model: gpt-oss
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        ab-model: gpt-oss
+        app.kubernetes.io/name: model-gpt-oss
+    spec:
+      nodeSelector:
+        workload: llm-cpu-medium
+      tolerations:
+        - key: workload
+          operator: Equal
+          value: llm-cpu-medium
+          effect: NoSchedule
+      containers:
+        - name: ollama
+          image: ollama/ollama:0.30.11
+          ports:
+            - containerPort: 11434
+              name: http
+          env:
+            - name: OLLAMA_HOST
+              value: "0.0.0.0:11434"
+            - name: OLLAMA_KEEP_ALIVE
+              value: "1h"
+            - name: OLLAMA_NUM_PARALLEL
+              value: "2"
+            - name: OLLAMA_MAX_LOADED_MODELS
+              value: "1"
+          resources:
+            requests:
+              cpu: "24"
+              memory: "48Gi"
+            limits:
+              cpu: "32"
+              memory: "60Gi"
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              ollama serve &
+              sleep 5
+              ollama pull gpt-oss:20b
+              wait
+          volumeMounts:
+            - name: ollama-data
+              mountPath: /root/.ollama
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 11434
+            initialDelaySeconds: 120
+            periodSeconds: 10
+      volumes:
+        - name: ollama-data
+          emptyDir:
+            sizeLimit: 30Gi

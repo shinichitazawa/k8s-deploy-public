@@ -1,0 +1,72 @@
+# Model #3: Phi-4-mini Instruct
+#   開発元: Microsoft (🇺🇸), License: MIT, サイズ: 3.8B, Context: 128K
+#   gate なし、ollama 公式 image に既に組み込み
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: model-phi4-mini
+  labels:
+    app.kubernetes.io/name: model-phi4-mini
+    ab-model: phi4-mini
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      ab-model: phi4-mini
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        ab-model: phi4-mini
+        app.kubernetes.io/name: model-phi4-mini
+    spec:
+      nodeSelector:
+        workload: llm-cpu-small
+      tolerations:
+        - key: workload
+          operator: Equal
+          value: llm-cpu-small
+          effect: NoSchedule
+      containers:
+        - name: ollama
+          image: ollama/ollama:0.30.11
+          ports:
+            - containerPort: 11434
+              name: http
+          env:
+            - name: OLLAMA_HOST
+              value: "0.0.0.0:11434"
+            - name: OLLAMA_KEEP_ALIVE
+              value: "1h"
+            - name: OLLAMA_NUM_PARALLEL
+              value: "2"
+            - name: OLLAMA_MAX_LOADED_MODELS
+              value: "1"
+          resources:
+            requests:
+              cpu: "12"
+              memory: "24Gi"
+            limits:
+              cpu: "16"
+              memory: "30Gi"
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              ollama serve &
+              sleep 5
+              ollama pull phi4-mini:3.8b
+              wait
+          volumeMounts:
+            - name: ollama-data
+              mountPath: /root/.ollama
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 11434
+            initialDelaySeconds: 60
+            periodSeconds: 10
+      volumes:
+        - name: ollama-data
+          emptyDir:
+            sizeLimit: 10Gi

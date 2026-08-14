@@ -1,0 +1,141 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: litellm-config
+  namespace: ai-platform
+data:
+  config.yaml: |
+    # LiteLLM proxy — OpenAI-compatible API fronting AWS Bedrock
+    # Uses IRSA (boto3 auto-detects from ServiceAccount) for Bedrock auth
+    # No internet egress: all Bedrock calls go via VPC Endpoint (PrivateLink)
+
+    model_list:
+      # Primary: Claude 3.5 Sonnet v2 — subscribed & tool-use supported in this account
+      # Phase 2 で Sonnet 4 に切替 (要: AWS Console > Bedrock > Model Access で Sonnet 4 を有効化)
+      - model_name: claude-sonnet-4
+        litellm_params:
+          model: bedrock/converse/jp.anthropic.claude-sonnet-4-5-20250929-v1:0
+          aws_region_name: ap-northeast-1
+
+      # Alias for future Sonnet 4.5 switch
+      - model_name: claude-3-5-sonnet
+        litellm_params:
+          model: bedrock/converse/apac.anthropic.claude-3-5-sonnet-20241022-v2:0
+          aws_region_name: ap-northeast-1
+
+      # Claude 3.7 Sonnet (APAC)
+      - model_name: claude-3-7-sonnet
+        litellm_params:
+          model: bedrock/converse/apac.anthropic.claude-3-7-sonnet-20250219-v1:0
+          aws_region_name: ap-northeast-1
+
+      # Fast/cheap: Claude 3 Haiku (APAC)
+      - model_name: claude-haiku
+        litellm_params:
+          model: bedrock/converse/apac.anthropic.claude-3-haiku-20240307-v1:0
+          aws_region_name: ap-northeast-1
+
+      # ── AWS Bedrock 比較対象: Amazon Nova family ──
+      # OSS 4 model との品質/コスト比較用。A/B router には含めず、直接 model 名で呼ぶ。
+      # Nova Premier は US East only のため除外、Tokyo で利用可能な Pro/Lite/Micro のみ。
+      # 出典: docs.aws.amazon.com/nova/latest/userguide/what-is-nova.html
+      - model_name: bedrock-nova-pro
+        litellm_params:
+          model: bedrock/converse/apac.amazon.nova-pro-v1:0
+          aws_region_name: ap-northeast-1
+        model_info: {ab_arm: "nova-pro", vendor: "AWS", country: "US", license: "Bedrock-API", size: "multimodal", context: "300K"}
+
+      - model_name: bedrock-nova-lite
+        litellm_params:
+          model: bedrock/converse/apac.amazon.nova-lite-v1:0
+          aws_region_name: ap-northeast-1
+        model_info: {ab_arm: "nova-lite", vendor: "AWS", country: "US", license: "Bedrock-API", size: "multimodal-low-cost", context: "300K"}
+
+      - model_name: bedrock-nova-micro
+        litellm_params:
+          model: bedrock/converse/apac.amazon.nova-micro-v1:0
+          aws_region_name: ap-northeast-1
+        model_info: {ab_arm: "nova-micro", vendor: "AWS", country: "US", license: "Bedrock-API", size: "text-only-lowest-latency", context: "128K"}
+
+      # ── A/B test: 4 local OSS models (CPU inference, ollama) ──
+      # 詳細: co2/eks/ai-platform/llm-ab-test/README.md
+      - model_name: local-sarashina
+        litellm_params:
+          model: openai/sarashina2.1-3b-instruct
+          api_base: http://model-sarashina.ai-platform.svc.cluster.local
+          api_key: dummy
+        model_info: {ab_arm: "sarashina", country: "JP", license: "MIT", size: "3B"}
+
+      - model_name: local-plamo
+        litellm_params:
+          model: openai/plamo-2-8b-instruct
+          api_base: http://model-plamo.ai-platform.svc.cluster.local
+          api_key: dummy
+        model_info: {ab_arm: "plamo", country: "JP", license: "Apache-2.0", size: "8B"}
+
+      - model_name: local-phi4-mini
+        litellm_params:
+          model: openai/phi4-mini
+          api_base: http://model-phi4-mini.ai-platform.svc.cluster.local
+          api_key: dummy
+        model_info: {ab_arm: "phi4-mini", country: "US", license: "MIT", size: "3.8B"}
+
+      - model_name: local-gpt-oss
+        litellm_params:
+          model: openai/gpt-oss-20b
+          api_base: http://model-gpt-oss.ai-platform.svc.cluster.local
+          api_key: dummy
+        model_info: {ab_arm: "gpt-oss", country: "US", license: "Apache-2.0", size: "20B-MoE"}
+
+      # A/B router: 同一 model_name を 4 つ並べると router_settings が round-robin で振り分け
+      - model_name: ab-router
+        litellm_params:
+          model: openai/sarashina2.1-3b-instruct
+          api_base: http://model-sarashina.ai-platform.svc.cluster.local
+          api_key: dummy
+        model_info: {ab_arm: "sarashina"}
+      - model_name: ab-router
+        litellm_params:
+          model: openai/plamo-2-8b-instruct
+          api_base: http://model-plamo.ai-platform.svc.cluster.local
+          api_key: dummy
+        model_info: {ab_arm: "plamo"}
+      - model_name: ab-router
+        litellm_params:
+          model: openai/phi4-mini
+          api_base: http://model-phi4-mini.ai-platform.svc.cluster.local
+          api_key: dummy
+        model_info: {ab_arm: "phi4-mini"}
+      - model_name: ab-router
+        litellm_params:
+          model: openai/gpt-oss-20b
+          api_base: http://model-gpt-oss.ai-platform.svc.cluster.local
+          api_key: dummy
+        model_info: {ab_arm: "gpt-oss"}
+
+    router_settings:
+      routing_strategy: simple-shuffle    # ab-router の 4 候補に round-robin で振り分け
+      enable_pre_call_checks: true
+      retry_after: 30
+      num_retries: 1
+
+    litellm_settings:
+      drop_params: true              # Drop unsupported OpenAI params instead of erroring
+      set_verbose: false
+      telemetry: false               # No phone-home
+      json_logs: true
+
+      # ── Langfuse 連携 (A/B test の inference を全 trace) ──
+      # 環境変数 LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY / LANGFUSE_HOST は
+      # external-secret 経由で Pod に注入される
+      success_callback: ["langfuse"]
+      failure_callback: ["langfuse"]
+      langfuse_default_tags: ["llm-ab-test-v1"]
+
+    general_settings:
+      # 値は env 経由 (litellm-auth / litellm-db Secret から)
+      master_key: os.environ/LITELLM_MASTER_KEY
+      database_url: os.environ/DATABASE_URL
+      ui_username: os.environ/UI_USERNAME
+      ui_password: os.environ/UI_PASSWORD
+      # DB ありなので spend logs 有効化 (cost tracking 用)

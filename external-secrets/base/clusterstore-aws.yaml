@@ -1,0 +1,17 @@
+# ClusterSecretStore: aws-secrets-manager
+# IRSA 経由 (EKS Hybrid Nodes 上で動作する想定)
+# Pi の k3s 単独運用時は、static credentials の Secret を作って参照する形に切り替え
+apiVersion: external-secrets.io/v1beta1
+kind: ClusterSecretStore
+metadata:
+  name: aws-secrets-manager
+spec:
+  provider:
+    aws:
+      service: SecretsManager
+      region: ap-northeast-1
+      auth:
+        jwt:
+          serviceAccountRef:
+            name: external-secrets
+            namespace: external-secrets

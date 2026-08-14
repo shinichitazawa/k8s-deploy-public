@@ -1,0 +1,44 @@
+# Karpenter NodePool for medium CPU inference (8-20B models)
+# Used by: PLaMo 2 8B, GPT-OSS-20B (MoE active 3.6B)
+# Instance: c7g.8xlarge (Graviton3 ARM, 32 vCPU / 64 GiB)
+apiVersion: karpenter.sh/v1
+kind: NodePool
+metadata:
+  name: llm-cpu-medium
+spec:
+  template:
+    metadata:
+      labels:
+        workload: llm-cpu-medium
+    spec:
+      nodeClassRef:
+        group: eks.amazonaws.com
+        kind: NodeClass
+        name: default
+      requirements:
+        - key: eks.amazonaws.com/instance-family
+          operator: In
+          values: ["c7g"]
+        - key: eks.amazonaws.com/instance-cpu
+          operator: In
+          values: ["32"]
+        - key: karpenter.sh/capacity-type
+          operator: In
+          values: ["spot", "on-demand"]
+        - key: kubernetes.io/arch
+          operator: In
+          values: ["arm64"]
+      taints:
+        - key: workload
+          value: llm-cpu-medium
+          effect: NoSchedule
+      expireAfter: 168h
+  disruption:
+    consolidationPolicy: WhenEmpty
+    consolidateAfter: 60s
+    budgets:
+      - nodes: "1"
+        reasons: ["Empty"]
+  limits:
+    cpu: "64"
+    memory: 128Gi

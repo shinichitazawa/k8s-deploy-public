@@ -1,0 +1,16 @@
+# KEDA (Kubernetes Event-Driven Autoscaler)
+# scale-to-zero / event-driven scaling のための cluster-level addon
+# 用途例: llm-ab-test の model deployments を Prometheus trigger で 0↔1 scale
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: keda
+
+helmCharts:
+  - name: keda
+    repo: https://kedacore.github.io/charts
+    version: 2.20.1            # 2026-06-08 release (chart = appVersion)
+    releaseName: keda
+    namespace: keda
+    valuesFile: values.yaml
+    includeCRDs: true

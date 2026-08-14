@@ -1,0 +1,73 @@
+# Model #1: Sarashina2.1-3B-Instruct
+#   開発元: SB Intuitions (🇯🇵), License: MIT, サイズ: 3B
+#   ※ HF gate あり: 初回 pull は手動で利用規約同意 → S3 cache に保存 → init container で sync
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: model-sarashina
+  labels:
+    app.kubernetes.io/name: model-sarashina
+    ab-model: sarashina
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      ab-model: sarashina
+  strategy:
+    type: Recreate            # model weight が大きく rolling deploy 不向き
+  template:
+    metadata:
+      labels:
+        ab-model: sarashina
+        app.kubernetes.io/name: model-sarashina
+    spec:
+      nodeSelector:
+        workload: llm-cpu-small
+      tolerations:
+        - key: workload
+          operator: Equal
+          value: llm-cpu-small
+          effect: NoSchedule
+      containers:
+        - name: ollama
+          image: ollama/ollama:0.30.11
+          ports:
+            - containerPort: 11434
+              name: http
+          env:
+            - name: OLLAMA_HOST
+              value: "0.0.0.0:11434"
+            - name: OLLAMA_KEEP_ALIVE
+              value: "1h"
+            - name: OLLAMA_NUM_PARALLEL
+              value: "2"
+            - name: OLLAMA_MAX_LOADED_MODELS
+              value: "1"
+          resources:
+            requests:
+              cpu: "12"
+              memory: "24Gi"
+            limits:
+              cpu: "16"
+              memory: "30Gi"
+          # 初回起動時に ollama pull で model を取得 (S3 cache 化は別 issue で改善)
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              ollama serve &
+              sleep 5
+              ollama pull hf.co/mmnga/sarashina2.1-3b-instruct-gguf:Q4_K_M
+              wait
+          volumeMounts:
+            - name: ollama-data
+              mountPath: /root/.ollama
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 11434
+            initialDelaySeconds: 60
+            periodSeconds: 10
+      volumes:
+        - name: ollama-data
+          emptyDir:
+            sizeLimit: 10Gi

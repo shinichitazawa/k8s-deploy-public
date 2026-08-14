@@ -1,0 +1,65 @@
+# ResourceGraphDefinition: simple-webapp
+# 複合リソース (Deployment + Service + ConfigMap) を 1 つの spec で記述する PoC
+# 参考: golem co2/eks の web-application RGD パターン
+apiVersion: kro.run/v1alpha1
+kind: ResourceGraphDefinition
+metadata:
+  name: simple-webapp
+  annotations:
+    argocd.argoproj.io/sync-wave: "4"
+spec:
+  schema:
+    apiVersion: v1alpha1
+    kind: SimpleWebApp
+    spec:
+      name: string
+      image: string | default="nginx:1.27-alpine"
+      replicas: integer | default=1
+      port: integer | default=80
+      configData:
+        message: string | default="hello"
+  resources:
+    - id: configmap
+      template:
+        apiVersion: v1
+        kind: ConfigMap
+        metadata:
+          name: ${schema.spec.name}-config
+        data:
+          message: ${schema.spec.configData.message}
+    - id: deployment
+      template:
+        apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+          name: ${schema.spec.name}
+        spec:
+          replicas: ${schema.spec.replicas}
+          selector:
+            matchLabels:
+              app: ${schema.spec.name}
+          template:
+            metadata:
+              labels:
+                app: ${schema.spec.name}
+            spec:
+              containers:
+                - name: web
+                  image: ${schema.spec.image}
+                  ports:
+                    - containerPort: ${schema.spec.port}
+                  envFrom:
+                    - configMapRef:
+                        name: ${configmap.metadata.name}
+    - id: service
+      template:
+        apiVersion: v1
+        kind: Service
+        metadata:
+          name: ${schema.spec.name}
+        spec:
+          selector:
+            app: ${schema.spec.name}
+          ports:
+            - port: ${schema.spec.port}
+              targetPort: ${schema.spec.port}

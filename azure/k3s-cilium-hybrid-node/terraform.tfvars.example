@@ -1,0 +1,13 @@
+# cp して terraform.tfvars を作る（secrets を含むためコミットしない → .gitignore 済み）
+subscription_id = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+location        = "japaneast"
+node_name       = "azure-cil"
+vm_size         = "Standard_B1s"
+# ゼロスケールは instances=0（CA が起こす）。テストは 1。
+instances       = 1
+ssh_public_key  = "ssh-ed25519 AAAA..."
+k3s_cp_host     = "raspberrypi-0.<tailnet>.ts.net"
+
+# --- secrets（実値は tfvars/env で。コミットしない）---
+# k3s_token         = "K10<ca-hash>::server:<secret>"
+# tailscale_authkey = "tskey-auth-xxxxxxxx"

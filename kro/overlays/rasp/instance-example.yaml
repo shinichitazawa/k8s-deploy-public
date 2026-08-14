@@ -1,0 +1,16 @@
+# Kro RGD `simple-webapp` の instance 例
+# RGD が apply されてから (wave=4) この instance を投入 (wave=14)
+apiVersion: kro.run/v1alpha1
+kind: SimpleWebApp
+metadata:
+  name: hello-rasp
+  namespace: kro-system
+  annotations:
+    argocd.argoproj.io/sync-wave: "14"
+spec:
+  name: hello-rasp
+  image: nginx:1.27-alpine
+  replicas: 1
+  port: 80
+  configData:
+    message: "hello from Raspberry Pi"
