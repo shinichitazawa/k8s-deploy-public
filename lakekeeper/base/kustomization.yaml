@@ -1,0 +1,33 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: lakekeeper
+
+# ns lakekeeper は lakehouse app(wave 25)が作る。共有 PG のユーザ Secret も
+# そちらの wave で ns が要るため、ここでは作らない。
+resources:
+  - sealedsecret.yaml
+
+helmCharts:
+  - name: lakekeeper
+    repo: https://lakekeeper.github.io/lakekeeper-charts
+    version: 0.12.0
+    releaseName: lakekeeper
+    namespace: lakekeeper
+    valuesFile: values.yaml
+
+# helm test の Pod を落とす。ArgoCD は `helm.sh/hook: test` の付いたリソースを適用しないので
+# (2026-09-21 確認: aws-ebs-csi-driver の test 用 SA / ClusterRole など 4 つは、レンダリング結果には
+# あるがクラスタに無く、Application の管理対象にも出ない)、ArgoCD 経由ならこの patch が無くても
+# test Pod は作られない。`kubectl apply -k` で直接当てたときに走らないよう残している。
+# (DB migration Job は post-install/post-upgrade hook で、ArgoCD が hook として扱うため残す)
+patches:
+  - target:
+      kind: Pod
+      name: lakekeeper-test-bootstrap
+    patch: |
+      $patch: delete
+      apiVersion: v1
+      kind: Pod
+      metadata:
+        name: lakekeeper-test-bootstrap

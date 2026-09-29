@@ -36,7 +36,7 @@ overlays/
 ## ExternalSecret 利用例 (tailscale)
 
 ```yaml
-apiVersion: external-secrets.io/v1beta1
+apiVersion: external-secrets.io/v1
 kind: ExternalSecret
 metadata:
   name: tailscale-auth
@@ -64,3 +64,33 @@ spec:
 
 - 公式: https://external-secrets.io/
 - golem co2: `~/work/golem/gorlem-infra-main/co2/eks/external-secrets/base/secretstore.yaml`
+
+---
+
+## 2026-09-18: rpi0-hybrid で実運用に入れた
+
+**背景**: ノードモジュールを足すたびに `terraform.tfvars` へ k3s token と Tailscale auth key を
+複製していた(ec2 / gcp / azure / oci で同じ値が 4 か所)。更新漏れと置き忘れの温床なので、
+**AWS Secrets Manager を単一の真実**にして、Terraform もクラスタも同じ 1 か所を読む形に変えた。
+
+```
+AWS Secrets Manager  example-env/rpi0-hybrid/
+    ├── k3s-node-token
+    └── tailscale-authkey
+         │
+         ├── Terraform  ec2/k3s-cilium-lakehouse-node/secrets.tf の data source
+         └── クラスタ   ESO の ClusterSecretStore aws-secrets-manager → ExternalSecret
+```
+
+投入は `tools/put-cluster-secrets.sh`(値は画面にもシェル履歴にも出さない)。
+
+### 変更点
+
+- chart **0.10.5 → 2.10.0**。API が `external-secrets.io/v1beta1` → **`v1`** に変わっている
+  (chart 2.x では v1 が保存バージョンで、v1beta1 は `crds.unsafeServeV1Beta1` を立てないと提供されない)
+- 認証は **keyless**。SA annotation `eks.amazonaws.com/role-arn` を付け、
+  ClusterSecretStore には **`auth` を書かない**。ESO は auth 未指定だとコントローラ自身の
+  AWS 資格情報(= pod-identity-webhook が注入した web identity)を使う
+- ロールは `AppCloudRole`(kro RGD)で合成。読めるのは `example-env/rpi0-hybrid/` 配下だけ
+- overlays/rasp の arm64 固定パッチを削除。ハイブリッドクラスタでは amd64 ノードの方が余裕がある
+- ApplicationSet `platform-hybrid` に wave 20 で登録(kro-rgds=15 の後)

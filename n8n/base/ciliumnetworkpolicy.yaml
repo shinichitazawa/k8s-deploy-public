@@ -1,0 +1,138 @@
+# n8n egress を最小許可する CiliumNetworkPolicy(default-deny egress)。
+# 許可先: DNS / 共有DB(infra shared-db:5432) / whisper:9000-9001 / world:443 / prometheus:9090。
+# ingress: host, tailscale ns, tailnet CIDR(100.64/10), eventbus nats-bridge → :5678。
+# 収斂の経緯: ライブに手動適用され ArgoCD 管理外だった実物を、runtime フィールドを
+#   除去して git 化(2026-08-21)。以後 egress 依存を足す時は spec.egress に追記する。
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  labels:
+    app.kubernetes.io/name: n8n
+  name: n8n
+  namespace: n8n
+spec:
+  egress:
+  - toEndpoints:
+    - matchLabels:
+        k8s-app: kube-dns
+        k8s:io.kubernetes.pod.namespace: kube-system
+    toPorts:
+    - ports:
+      - port: '53'
+        protocol: UDP
+      - port: '53'
+        protocol: TCP
+  - toEndpoints:
+    - matchLabels:
+        cluster-name: shared-db
+        k8s:io.kubernetes.pod.namespace: infra
+    toPorts:
+    - ports:
+      - port: '5432'
+        protocol: TCP
+  # 共有 Redis(queue モードのブローカ)。main/worker が Bull キューに接続する。
+  - toEndpoints:
+    - matchLabels:
+        app.kubernetes.io/name: shared-redis
+        k8s:io.kubernetes.pod.namespace: infra
+    toPorts:
+    - ports:
+      - port: '6379'
+        protocol: TCP
+  - toEndpoints:
+    - matchLabels:
+        k8s:io.kubernetes.pod.namespace: whisper
+    toPorts:
+    - ports:
+      - port: '9000'
+        protocol: TCP
+      - port: '9001'
+        protocol: TCP
+  # kube-apiserver(sync-public の Job 作成/監視を HTTP Request ノードが叩く。RBAC は tools/sync-public/k8s/rbac.yaml)
+  - toEntities:
+    - kube-apiserver
+    toPorts:
+    - ports:
+      - port: '6443'
+        protocol: TCP
+      - port: '443'
+        protocol: TCP
+  - toEntities:
+    - world
+    toPorts:
+    - ports:
+      - port: '443'
+        protocol: TCP
+  - toEndpoints:
+    - matchLabels:
+        app.kubernetes.io/name: prometheus
+        k8s:io.kubernetes.pod.namespace: monitoring
+    toPorts:
+    - ports:
+      - port: '9090'
+        protocol: TCP
+  # LiteLLM proxy(LLM 呼び出しを OpenAI 互換で中継し、gen_ai.* スパンを出す)
+  - toEndpoints:
+    - matchLabels:
+        app.kubernetes.io/name: litellm
+        k8s:io.kubernetes.pod.namespace: litellm
+    toPorts:
+    - ports:
+      - port: '4000'
+        protocol: TCP
+  # OpenTelemetry(実行/ノードスパンを Jaeger の OTLP/HTTP へ送る)。
+  # default-deny egress なので、これを忘れるとトレース送信だけが静かに失敗する。
+  - toEndpoints:
+    - matchLabels:
+        app: jaeger
+        k8s:io.kubernetes.pod.namespace: tracing
+    toPorts:
+    - ports:
+      - port: '4318'
+        protocol: TCP
+  # YomiToku(日本語 OCR)。証憑の読取をクラスタ内で完結させるため。
+  - toEndpoints:
+    - matchLabels:
+        app: yomitoku
+        k8s:io.kubernetes.pod.namespace: ocr
+    toPorts:
+    - ports:
+      - port: '8000'
+        protocol: TCP
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: n8n
+  ingress:
+  - fromEntities:
+    - host
+  - fromEndpoints:
+    - matchLabels:
+        k8s:io.kubernetes.pod.namespace: tailscale
+    toPorts:
+    - ports:
+      - port: '5678'
+        protocol: TCP
+  - fromCIDRSet:
+    - cidr: 100.64.0.0/10
+    toPorts:
+    - ports:
+      - port: '5678'
+        protocol: TCP
+  - fromEndpoints:
+    - matchLabels:
+        app.kubernetes.io/name: nats-bridge
+        k8s:io.kubernetes.pod.namespace: eventbus
+    toPorts:
+    - ports:
+      - port: '5678'
+        protocol: TCP
+  # Grafana のアラート通知(webhook contact point)を受ける。
+  # Grafana -> http://n8n.n8n.svc/webhook/<path>(Service は :80 -> pod :5678)。
+  - fromEndpoints:
+    - matchLabels:
+        app: grafana
+        k8s:io.kubernetes.pod.namespace: monitoring
+    toPorts:
+    - ports:
+      - port: '5678'
+        protocol: TCP

@@ -61,7 +61,7 @@ metadata:
   namespace: infra          # 管理系は infra に集約(multi-k3s 方針)
 spec:
   name: myapp
-  bucketName: st-dev-myapp-data
+  bucketName: example-myapp-data
   access: readwrite
   trustPrincipalArn: ""     # keyless 方式決定後に埋める
 ```

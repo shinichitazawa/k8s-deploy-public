@@ -1,0 +1,101 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: wren-mcp
+  labels:
+    app.kubernetes.io/name: wren-mcp
+spec:
+  replicas: 1
+  # MCP の streamable-http はセッションをプロセス内に持つ。並走させない。
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: wren-mcp
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: wren-mcp
+    spec:
+      automountServiceAccountToken: false
+      # requirements.lock は x86_64 向けの wheel のハッシュで固定してある。
+      nodeSelector:
+        kubernetes.io/hostname: lab-worker-14
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        - name: prepare
+          image: &image python:3.14.7-slim-trixie@sha256:caaf356f40667c496d405780745b9ac25771c189a51dfcc42430d531ea09f8a2
+          command: ["sh", "/config/prepare.sh"]
+          env: &env
+            - {name: HOME, value: /tmp}
+            - {name: WREN_HOME, value: /work/home}
+            - {name: PYTHONPATH, value: /opt/wren}
+            - {name: PYTHONDONTWRITEBYTECODE, value: "1"}
+          securityContext: &sc
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: ["ALL"]}
+          resources:
+            requests: {cpu: 100m, memory: 256Mi}
+            limits: {cpu: "2", memory: 1Gi}
+          volumeMounts: &mounts
+            - {name: config, mountPath: /config, readOnly: true}
+            - {name: project, mountPath: /config-project, readOnly: true}
+            - {name: site, mountPath: /opt/wren}
+            - {name: work, mountPath: /work}
+            - {name: tmp, mountPath: /tmp}
+      containers:
+        - name: wren-mcp
+          image: *image
+          command: ["python", "/config/launch.py"]
+          # --allow-write は付けない(store_query を公開しない)。
+          args:
+            - --transport=http
+            - --host=0.0.0.0
+            - --port=8080
+            - --project=/work/project
+            - --profile=trino-lakehouse
+            - --quiet
+          env:
+            - {name: HOME, value: /tmp}
+            - {name: WREN_HOME, value: /work/home}
+            - {name: PYTHONPATH, value: /opt/wren}
+            - {name: PYTHONDONTWRITEBYTECODE, value: "1"}
+            # launch.py が許可する Host ヘッダ。ここに無い名前で来た要求は 421 になる。
+            - name: WREN_MCP_ALLOWED_HOSTS
+              value: "wren-mcp.wrenai.svc.cluster.local:*,wren-mcp.wrenai.svc:*,wren-mcp.wrenai:*,wren-mcp.example.ts.net"
+          ports:
+            - {name: mcp, containerPort: 8080}
+          # /mcp は GET に 406 を返すので HTTP probe にできない。
+          startupProbe:
+            tcpSocket: {port: mcp}
+            periodSeconds: 5
+            failureThreshold: 24
+          readinessProbe:
+            tcpSocket: {port: mcp}
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket: {port: mcp}
+            periodSeconds: 30
+          securityContext: *sc
+          resources:
+            requests: {cpu: 100m, memory: 256Mi}
+            limits: {cpu: "1", memory: 1Gi}
+          volumeMounts: *mounts
+      volumes:
+        - name: config
+          configMap: {name: wren-mcp-config}
+        - name: project
+          configMap: {name: wren-mcp-project}
+        - name: site
+          emptyDir: {sizeLimit: 2Gi}
+        - name: work
+          emptyDir: {sizeLimit: 64Mi}
+        - name: tmp
+          emptyDir: {sizeLimit: 256Mi}

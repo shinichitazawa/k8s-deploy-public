@@ -26,7 +26,7 @@ flowchart LR
 - rpi0 が tailnet 参加済み・node-ip=TSIP・tls-san に FQDN 追加済み（AWS 版 README 参照）
 - Cilium の `KUBERNETES_SERVICE_HOST` が rpi0 の TS IP（tailnet ノードから API 到達に必須）
 - GCP: Compute Engine API 有効・billing 有効
-- 認証: `gcloud auth application-default login`（google provider 用）＋ `AWS_PROFILE=st-dev`（S3 backend 用）
+- 認証: `gcloud auth application-default login`（google provider 用）＋ `AWS_PROFILE=example-env`（S3 backend 用）
 
 ## secrets
 
@@ -41,9 +41,9 @@ flowchart LR
 ```bash
 cd gcp/k3s-cilium-hybrid-node
 cp terraform.tfvars.example terraform.tfvars   # secrets と k3s_cp_host を記入
-AWS_PROFILE=st-dev terraform init
-AWS_PROFILE=st-dev terraform plan
-AWS_PROFILE=st-dev terraform apply
+AWS_PROFILE=example-env terraform init
+AWS_PROFILE=example-env terraform plan
+AWS_PROFILE=example-env terraform apply
 ```
 
 ## 検証
@@ -63,7 +63,7 @@ sudo k3s kubectl apply -f ../../kro/base/instance-gcp-workload-example.yaml
 ## 破棄
 
 ```bash
-AWS_PROFILE=st-dev terraform destroy
+AWS_PROFILE=example-env terraform destroy
 # k3s 側:
 sudo k3s kubectl delete node <node_name>
 ```

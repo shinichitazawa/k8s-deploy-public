@@ -1,0 +1,3 @@
+sqlmesh[trino]==0.236.2
+# sqlmesh の postgres extra は psycopg2(ソース配布のみ)を引くので、wheel のある binary 版を使う
+psycopg2-binary==2.9.11

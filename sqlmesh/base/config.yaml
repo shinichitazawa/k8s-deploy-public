@@ -1,0 +1,29 @@
+# SQLMesh のプロジェクト設定。変換は Trino に投げ、SQLMesh 自身の状態は共有 PostgreSQL に置く
+# (Trino は state connection に使えない。公式ドキュメントに明記されている)。
+gateways:
+  lakehouse:
+    connection:
+      type: trino
+      host: trino.trino.svc.cluster.local
+      port: 8080
+      http_scheme: http
+      user: sqlmesh
+      catalog: lakehouse
+      # セッションのタイムゾーンを UTC に固定する。既定はクライアントのゾーンになり、
+      # timestamp with time zone の列を素の TIMESTAMP リテラルと比べると
+      # **エラーにならず 0 件になる**(実測)。
+      timezone: UTC
+    state_connection:
+      type: postgres
+      host: shared-db.infra.svc.cluster.local
+      port: 5432
+      database: sqlmesh
+      user: "{{ env_var('PGUSER') }}"
+      password: "{{ env_var('PGPASSWORD') }}"
+
+default_gateway: lakehouse
+
+model_defaults:
+  dialect: trino
+  # bronze にデータがあるのはここから。これより前は backfill しない。
+  start: 2026-09-25

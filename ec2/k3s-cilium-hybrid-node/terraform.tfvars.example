@@ -1,0 +1,17 @@
+# cp して terraform.tfvars を作る（secrets を含むためコミットしない → .gitignore 済み）
+# Terrakube から実行する場合は、下記 sensitive 変数を Terrakube の Variables(sensitive) で渡す。
+
+region         = "ap-northeast-1"
+profile        = "example-env"
+node_name      = "ec2-cil"
+# rpi0 の MagicDNS FQDN(推奨, IP 非依存)。rpi0 側で --tls-san に追加済みが前提。TS IP(100.x)も可。
+k3s_cp_host    = "raspberrypi-0.<tailnet>.ts.net"
+k3s_version    = "v1.36.2+k3s1"
+# ASG Mixed Instances(Spot, price-capacity-optimized, 全AZ分散)
+instance_types = ["t4g.micro"]
+desired_capacity = 1
+# on_demand_percentage = 0  # 0=全Spot / 100=全on-demand（容量が全滅した時の緊急フォールバック）
+
+# --- secrets（例。実値は tfvars/Terrakube variable で。リポジトリに置かない）---
+# k3s_token         = "K10<ca-hash>::server:<secret>"
+# tailscale_authkey = "tskey-auth-xxxxxxxx"

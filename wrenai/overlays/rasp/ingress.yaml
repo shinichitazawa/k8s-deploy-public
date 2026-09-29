@@ -1,0 +1,17 @@
+# MCP サーバを tailnet に HTTPS 公開する(https://wren-mcp.example.ts.net/mcp)。
+# 認証は無いので、届く範囲は tailnet の ACL が決める。
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: wren-mcp
+  namespace: wrenai
+spec:
+  ingressClassName: tailscale
+  tls:
+    - hosts:
+        - wren-mcp
+  defaultBackend:
+    service:
+      name: wren-mcp
+      port:
+        number: 8080

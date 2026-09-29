@@ -1,0 +1,39 @@
+# 受け口を持たない。出口は DNS / Trino / 共有 PostgreSQL / PyPI(initContainer)。
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: sqlmesh
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: sqlmesh
+  ingress:
+    - {}
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            k8s-app: kube-dns
+            k8s:io.kubernetes.pod.namespace: kube-system
+      toPorts:
+        - ports:
+            - {port: "53", protocol: UDP}
+            - {port: "53", protocol: TCP}
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: trino
+            app.kubernetes.io/name: trino
+      toPorts:
+        - ports:
+            - {port: "8080", protocol: TCP}
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: infra
+            cluster-name: shared-db
+      toPorts:
+        - ports:
+            - {port: "5432", protocol: TCP}
+    - toEntities:
+        - world
+      toPorts:
+        - ports:
+            - {port: "443", protocol: TCP}

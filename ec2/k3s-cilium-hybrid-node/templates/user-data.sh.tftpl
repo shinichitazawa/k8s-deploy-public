@@ -1,0 +1,40 @@
+#!/bin/bash
+set -uxo pipefail
+
+# 0. instance 毎に一意な hostname（ASG 置換で node-password 衝突を避けるため node 名を一意化）
+#    IMDSv2 トークンで instance-id と AZ を取得（AZ は Cluster Autoscaler 用の providerID に使う）
+TOK=$(curl -s -X PUT http://169.254.169.254/latest/api/token -H 'X-aws-ec2-metadata-token-ttl-seconds: 300')
+IID=$(curl -s -H "X-aws-ec2-metadata-token: $TOK" http://169.254.169.254/latest/meta-data/instance-id)
+AZ=$(curl -s -H "X-aws-ec2-metadata-token: $TOK" http://169.254.169.254/latest/meta-data/placement/availability-zone)
+NODE="${node_name}-$IID"
+
+# 1. Tailscale 導入 → tailnet 参加（純オーバーレイ設計 = subnet route は使わない。SSH 有効）
+#    CP(rpi0) は MagicDNS 名で解決するため --accept-dns=true（split-DNS: tailnet 名は
+#    Tailscale resolver、それ以外は既定へフォワード）。自宅 LAN は橋渡ししない。
+curl -fsSL https://tailscale.com/install.sh | sh
+tailscale up --accept-dns=true --ssh \
+  --hostname="$NODE" --authkey=${tailscale_authkey}
+# tailscale IP を取得。Cilium は node の InternalIP をトンネル端点に使うので、
+# 後段の k3s agent で --node-ip=$TSIP を渡し、この TS IP を Cilium VXLAN 端点にする
+# （rpi0 も TS IP を node-ip にしているので、両端点が TS IP で直接 mesh する）。
+for i in $(seq 1 20); do TSIP=$(tailscale ip -4 2>/dev/null | head -1); [ -n "$TSIP" ] && break; sleep 2; done
+
+# 2. k3s control-plane(rpi0 の TS IP) に tailnet 経由で到達できるまで待つ
+for i in $(seq 1 40); do
+  (echo > /dev/tcp/${k3s_cp_host}/${k3s_cp_port}) >/dev/null 2>&1 && break
+  sleep 3
+done
+
+# 3. k3s agent を join（バージョン固定 / node 名は一意 hostname / role・cloud ラベル / taint で専有）
+#    --node-name を固定しないことで ASG 置換時の node-password 衝突を回避。
+#    ノード選択は label(role=ec2-spot, cloud=aws) + taint(dedicated=aws-ops) の toleration で行う。
+#    --node-ip=$TSIP: kubelet の InternalIP を TS IP にし、Cilium VXLAN 端点を tailnet 上に置く。
+#    --kubelet-arg=provider-id=aws:///<az>/<id>: cloud-provider 無しの自前 k3s でも Cluster
+#      Autoscaler が ASG インスタンスと k8s node を相関できるようにする（これが無いと CA が機能しない）。
+TAINT_ARG=""
+[ -n "${node_taint}" ] && TAINT_ARG="--node-taint ${node_taint}"
+curl -sfL https://get.k3s.io | \
+  INSTALL_K3S_VERSION=${k3s_version} \
+  K3S_URL=${k3s_url} \
+  K3S_TOKEN='${k3s_token}' \
+  INSTALL_K3S_EXEC="agent --node-name=$NODE --node-label=role=ec2-spot --node-label=cloud=aws --node-ip=$TSIP --kubelet-arg=provider-id=aws:///$AZ/$IID $TAINT_ARG" sh -

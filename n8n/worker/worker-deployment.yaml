@@ -1,0 +1,164 @@
+# n8n worker(queue モードの実行体)。main が Redis キューへ投入したジョブを実行する。
+# - main とは別 identity(app=n8n-worker)。理由: main の selector は app=n8n 固定で、
+#   worker に app=n8n を付けると main の ReplicaSet が worker pod を誤って adopt する。
+#   よって worker は base(app=n8n transformer)の外に置き、独自ラベル＋独自 CNP にする。
+# - main と同じ DB / Redis / 暗号鍵 を共有する(不一致だと復号・実行不能)。
+# - replicas=2 で実行を冗長化・並列化。ただし常時ノードは raspberrypi-0 のみのため、
+#   本質的な冗長は「pod/プロセス障害」に対してで、ノード障害には別ノード常設が要る。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: n8n-worker
+  namespace: n8n
+  labels:
+    app.kubernetes.io/name: n8n-worker
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: n8n-worker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: n8n-worker
+    spec:
+      # AI(Bedrock keyless)ノードを worker が実行するため main と同じ SA。
+      serviceAccountName: n8n-bedrock
+      nodeSelector:
+        kubernetes.io/hostname: lab-worker-14
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      containers:
+        - name: n8n-worker
+          image: docker.n8n.io/n8nio/n8n:2.39.8
+          imagePullPolicy: IfNotPresent
+          # worker サブコマンドで起動(UI/API は持たない)。
+          command: ["n8n", "worker"]
+          ports:
+            # QUEUE_HEALTH_CHECK_ACTIVE=true のとき /healthz を出すポート。
+            - name: http
+              containerPort: 5678
+          env:
+            # --- DB: main と同一の共有 Zalando PostgreSQL ---
+            - name: DB_TYPE
+              value: postgresdb
+            - name: DB_POSTGRESDB_HOST
+              value: shared-db.infra.svc.cluster.local
+            - name: DB_POSTGRESDB_PORT
+              value: "5432"
+            - name: DB_POSTGRESDB_DATABASE
+              value: n8n
+            - name: DB_POSTGRESDB_SCHEMA
+              value: public
+            - name: DB_POSTGRESDB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: n8n.n8n.shared-db.credentials.postgresql.acid.zalan.do
+                  key: username
+            - name: DB_POSTGRESDB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: n8n.n8n.shared-db.credentials.postgresql.acid.zalan.do
+                  key: password
+            - name: DB_POSTGRESDB_SSL_ENABLED
+              value: "true"
+            - name: DB_POSTGRESDB_SSL_REJECT_UNAUTHORIZED
+              value: "false"
+            # --- queue: main と同一の共有 Redis / prefix / DB index ---
+            - name: EXECUTIONS_MODE
+              value: queue
+            - name: QUEUE_BULL_REDIS_HOST
+              value: shared-redis.infra.svc.cluster.local
+            - name: QUEUE_BULL_REDIS_PORT
+              value: "6379"
+            - name: QUEUE_BULL_REDIS_DB
+              value: "0"
+            - name: QUEUE_BULL_PREFIX
+              value: n8n
+            # worker の /healthz を有効化(probe 用)。
+            - name: QUEUE_HEALTH_CHECK_ACTIVE
+              value: "true"
+            # --- 公開 URL: main と同一にする(2026-09-07) ---
+            # worker が実行する本番(フォーム/webhook 起動)の Wait / sendAndWait は
+            # worker 側の設定で再開 URL($execution.resumeUrl)を組み立てる。未設定だと
+            # http://localhost:5678/webhook-waiting/... になり Slack の承認ボタンが壊れる。
+            - name: N8N_HOST
+              value: n8n.example.ts.net
+            - name: N8N_PROTOCOL
+              value: https
+            - name: N8N_PORT
+              value: "5678"
+            - name: N8N_EDITOR_BASE_URL
+              value: https://n8n.example.ts.net/
+            - name: WEBHOOK_URL
+              value: https://n8n.example.ts.net/
+            - name: GENERIC_TIMEZONE
+              value: Asia/Tokyo
+            - name: TZ
+              value: Asia/Tokyo
+            - name: N8N_DIAGNOSTICS_ENABLED
+              value: "false"
+            - name: N8N_RUNNERS_ENABLED
+              value: "true"
+            # --- OpenTelemetry: 実行スパン + ノードスパンを Jaeger(OTLP/HTTP)へ ---
+            # 実行は worker 側で走るので、ノードスパンの実体はここから出る。main と同じ Jaeger へ。
+            # (Bedrock 呼び出し)の所要時間とワークフロー内の位置がトレースとして追える。
+            # 既定値: includeNodeSpans=true / productionExecutionsOnly=true / sampleRate=1.0。
+            # 属性は n8n.workflow.* / n8n.execution.* / n8n.node.*(gen_ai.* は n8n は出さない)。
+            - name: N8N_OTEL_ENABLED
+              value: "true"
+            - name: N8N_OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://jaeger.tracing.svc.cluster.local:4318
+            - name: N8N_OTEL_EXPORTER_SERVICE_NAME
+              value: n8n-worker
+            # keyless Bedrock: main と同様に system credentials(IRSA)を許可。
+            - name: N8N_AWS_SYSTEM_CREDENTIALS_ACCESS_ENABLED
+              value: "true"
+            # Node の旧世代ヒープ上限。コンテナ制限(3Gi)より低く置き、ヒープ枯渇時に
+            # OOMKill でなく Node 側で止まるようにする(2026-09-09)。
+            - name: NODE_OPTIONS
+              value: --max-old-space-size=2304
+            # --- 暗号鍵: main と必ず同一(同じ Secret を参照) ---
+            - name: N8N_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: n8n-encryption-key
+                  key: N8N_ENCRYPTION_KEY
+          volumeMounts:
+            - name: n8n-data
+              mountPath: /home/node/.n8n
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+            failureThreshold: 60
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            failureThreshold: 5
+          # メモリは 1Gi → 3Gi(2026-09-09)。証憑フロー(レシート画像を DL → 縮小 →
+          # Bedrock へ渡す)が 14 枚で OOM crash した。画像は 1 実行に複数枚がメモリ上
+          # に載るため、実行体である worker を main より厚くする。
+          resources:
+            requests:
+              cpu: 100m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 3Gi
+      volumes:
+        - name: n8n-data
+          emptyDir: {}

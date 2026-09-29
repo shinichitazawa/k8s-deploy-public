@@ -1,0 +1,10 @@
+# Trino は認証無し(ClusterIP のみ)なので秘密値は無い。
+active: trino-lakehouse
+profiles:
+  trino-lakehouse:
+    datasource: trino
+    host: trino.trino.svc.cluster.local
+    port: '8080'
+    catalog: lakehouse
+    schema: bronze
+    user: wren

@@ -36,7 +36,7 @@ data:
     acc = post(cfg['service_account_impersonation_url'],
         {'scope': ['https://www.googleapis.com/auth/cloud-platform']},
         {'Authorization': f'Bearer {fed}'})['accessToken']
-    r = post(f'https://compute.googleapis.com/compute/v1/projects/<PROJECT_ID>/zones/asia-northeast1-a/instanceGroupManagers/gcp-cil-mig/resize?size={size}',
+    r = post(f'https://compute.googleapis.com/compute/v1/projects/example-project/zones/asia-northeast1-a/instanceGroupManagers/gcp-cil-mig/resize?size={size}',
         {}, {'Authorization': f'Bearer {acc}'})
     print('resize ->', size, 'status:', r.get('status'))
 ---
@@ -46,6 +46,7 @@ metadata:
   name: gcp-mig-up
   namespace: cluster-ops
 spec:
+  suspend: true   # 既定は停止。検証時に false へ
   schedule: "38 14 * * *"
   timeZone: Asia/Tokyo
   concurrencyPolicy: Forbid
@@ -73,7 +74,7 @@ spec:
                   - serviceAccountToken:
                       path: token
                       expirationSeconds: 3600
-                      audience: https://iam.googleapis.com/projects/111111111111/locations/global/workloadIdentityPools/example-pool/providers/example-provider
+                      audience: https://iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/rpi0-pool/providers/rpi0-provider
 ---
 apiVersion: batch/v1
 kind: CronJob
@@ -81,6 +82,7 @@ metadata:
   name: gcp-mig-down
   namespace: cluster-ops
 spec:
+  suspend: true   # 既定は停止。検証時に false へ
   schedule: "5 15 * * *"
   timeZone: Asia/Tokyo
   concurrencyPolicy: Forbid
@@ -108,4 +110,4 @@ spec:
                   - serviceAccountToken:
                       path: token
                       expirationSeconds: 3600
-                      audience: https://iam.googleapis.com/projects/111111111111/locations/global/workloadIdentityPools/example-pool/providers/example-provider
+                      audience: https://iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/rpi0-pool/providers/rpi0-provider

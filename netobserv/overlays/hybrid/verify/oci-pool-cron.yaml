@@ -1,0 +1,77 @@
+# OCI 用の代替自動スケール(人手ゼロ)。GCP 版(gcp-mig-cron.yaml)と同型。
+#
+# 背景: OCI には外部 OIDC からの workload identity federation に相当する経路が
+# この用途では使えないため(API リクエストは RSA 署名が必要)、API キーを Secret
+# (oci-api-config: config + key.pem)として与え、python SDK で instance pool を
+# resize する。CA の oci provider は未検証(混在 providerID での挙動が不明)。
+# shape は A1.Flex(1 OCPU/6GB, Always Free 対象)。A1 は在庫切れ
+# ("Out of host capacity")が出ることがある点に注意。
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: oci-pool-resize-script
+  namespace: cluster-ops
+data:
+  resize.py: |
+    import sys, oci
+    size = int(sys.argv[1])
+    pool_id = sys.argv[2]
+    cfg = oci.config.from_file('/etc/oci/config')
+    c = oci.core.ComputeManagementClient(cfg)
+    r = c.update_instance_pool(pool_id,
+        oci.core.models.UpdateInstancePoolDetails(size=size))
+    print('resize ->', size, 'state:', r.data.lifecycle_state)
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: oci-pool-up
+  namespace: cluster-ops
+spec:
+  suspend: true   # 既定は停止。検証時に false へ
+  schedule: "32 16 * * *"
+  timeZone: Asia/Tokyo
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      ttlSecondsAfterFinished: 3600
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: resize
+              image: python:3.12-slim
+              command: ["sh","-c","pip install -q oci && python /scripts/resize.py 1 ocid1.instancepool.oc1.ap-tokyo-1.aaaaaaaapfzq2jhwycmwuxn24uovbweoxh77vua6f32gehr3zclm3jo2l2dq"]
+              volumeMounts:
+                - {name: script, mountPath: /scripts}
+                - {name: oci-config, mountPath: /etc/oci}
+          volumes:
+            - {name: script, configMap: {name: oci-pool-resize-script}}
+            - {name: oci-config, secret: {secretName: oci-api-config}}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: oci-pool-down
+  namespace: cluster-ops
+spec:
+  suspend: true   # 既定は停止。検証時に false へ
+  schedule: "35 17 * * *"
+  timeZone: Asia/Tokyo
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      ttlSecondsAfterFinished: 3600
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: resize
+              image: python:3.12-slim
+              command: ["sh","-c","pip install -q oci && python /scripts/resize.py 0 ocid1.instancepool.oc1.ap-tokyo-1.aaaaaaaapfzq2jhwycmwuxn24uovbweoxh77vua6f32gehr3zclm3jo2l2dq"]
+              volumeMounts:
+                - {name: script, mountPath: /scripts}
+                - {name: oci-config, mountPath: /etc/oci}
+          volumes:
+            - {name: script, configMap: {name: oci-pool-resize-script}}
+            - {name: oci-config, secret: {secretName: oci-api-config}}

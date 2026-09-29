@@ -1,0 +1,50 @@
+#!/bin/bash
+set -uxo pipefail
+
+# GPU hybrid node bootstrap(EC2 g6 = NVIDIA L4)。
+# 注意: EC2 の user-data は cloud-init により「初回起動時のみ」実行される(GCP の毎ブート実行と違う)。
+# そのため GCP 版のような reboot 前提の 2 段構えは使えず、reboot なしでドライバをロードする。
+
+TOK=$(curl -s -X PUT http://169.254.169.254/latest/api/token -H 'X-aws-ec2-metadata-token-ttl-seconds: 300')
+IID=$(curl -s -H "X-aws-ec2-metadata-token: $TOK" http://169.254.169.254/latest/meta-data/instance-id)
+AZ=$(curl -s -H "X-aws-ec2-metadata-token: $TOK" http://169.254.169.254/latest/meta-data/placement/availability-zone)
+NODE="${node_name}-$IID"
+
+export DEBIAN_FRONTEND=noninteractive
+
+# 0-a. NVIDIA ドライバ(L4)。k3s より先。
+apt-get update -y
+apt-get install -y ubuntu-drivers-common
+ubuntu-drivers install --gpgpu
+
+# 0-b. NVIDIA Container Toolkit(必ず k3s より先: k3s が agent 起動時に nvidia runtime を自動登録)
+curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+curl -fsSL https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' > /etc/apt/sources.list.d/nvidia-container-toolkit.list
+apt-get update -y
+apt-get install -y nvidia-container-toolkit
+
+# 0-c. reboot なしでドライバをロード(初回ブートで nouveau が掴んでいる場合は外す)
+modprobe -r nouveau 2>/dev/null || true
+modprobe nvidia || true
+nvidia-smi || echo "WARN: nvidia-smi 失敗。ノードは join させる(device plugin は FAIL_ON_INIT_ERROR=true で再試行)。直らなければ一度 reboot"
+
+# 1. Tailscale 参加(純オーバーレイ)
+curl -fsSL https://tailscale.com/install.sh | sh
+tailscale up --accept-dns=true --ssh --hostname="$NODE" --authkey=${tailscale_authkey}
+for i in $(seq 1 20); do TSIP=$(tailscale ip -4 2>/dev/null | head -1); [ -n "$TSIP" ] && break; sleep 2; done
+
+# 2. CP(rpi0)到達待ち
+for i in $(seq 1 40); do
+  (echo > /dev/tcp/${k3s_cp_host}/${k3s_cp_port}) >/dev/null 2>&1 && break
+  sleep 3
+done
+
+# 3. k3s agent join(label gpu=l4 で device plugin が載る。taint dedicated=gpu-ops で GPU 専有。
+#    providerID aws:///<az>/<id> で Cluster Autoscaler が ASG と node を相関)
+TAINT_ARG=""
+[ -n "${node_taint}" ] && TAINT_ARG="--node-taint ${node_taint}"
+curl -sfL https://get.k3s.io | \
+  INSTALL_K3S_VERSION=${k3s_version} \
+  K3S_URL=${k3s_url} \
+  K3S_TOKEN='${k3s_token}' \
+  INSTALL_K3S_EXEC="agent --node-name=$NODE --node-label=role=gpu-spot --node-label=cloud=aws --node-label=gpu=l4 --node-ip=$TSIP --kubelet-arg=provider-id=aws:///$AZ/$IID $TAINT_ARG" sh -

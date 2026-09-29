@@ -1,0 +1,17 @@
+# cp して terraform.tfvars を作る（secrets を含むためコミットしない → .gitignore 済み）
+region         = "ap-northeast-1"
+profile        = "example-env"
+instance_types = ["g6.2xlarge", "g6.4xlarge"]
+node_name      = "ec2-gpu"
+disk_size_gb   = 80
+# ゼロスケール運用は 0/0（CA が起こす）。実機テストは 1/1。
+min_size         = 0
+desired_capacity = 0
+max_size         = 1
+# rpi0 の MagicDNS FQDN（tls-san 済み）
+k3s_cp_host = "raspberrypi-0.<tailnet>.ts.net"
+k3s_version = "v1.36.2+k3s1"
+
+# --- secrets（実値は tfvars で。リポジトリに置かない）---
+# k3s_token         = "K10<ca-hash>::server:<secret>"
+# tailscale_authkey = "tskey-auth-xxxxxxxx"

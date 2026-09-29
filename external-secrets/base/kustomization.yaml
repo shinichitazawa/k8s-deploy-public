@@ -1,16 +1,19 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
-namespace: external-secrets
-
+# namespace の一括上書きはしない。AppCloudRole は ns infra(ACK / kro の集約先)に
+# 置く必要があり、transformer を入れると external-secrets に書き換えられてしまう。
+# chart 側は helmCharts[].namespace で external-secrets に入る。
 resources:
   - namespace.yaml
   - clusterstore-aws.yaml
+  # ロールは ns infra に置く(ACK / kro のリソースはそこに集約している)。
+  - appcloudrole-external-secrets.yaml
 
 helmCharts:
   - name: external-secrets
     repo: https://charts.external-secrets.io
-    version: 0.10.5
+    version: 2.10.0
     releaseName: external-secrets
     namespace: external-secrets
     valuesFile: values.yaml

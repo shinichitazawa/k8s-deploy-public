@@ -1,0 +1,27 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# ns は lakehouse app(wave 25)が作る。infra(30)が共有 PG の Secret をここへ出すため、
+# それより前に存在している必要がある。
+namespace: sqlmesh
+
+resources:
+  - cronjob.yaml
+  - ciliumnetworkpolicy.yaml
+
+configMapGenerator:
+  - name: sqlmesh-config
+    files:
+      - config.yaml
+      - prepare.sh
+      - run.sh
+      - requirements.lock
+  # モデル定義。ConfigMap のキーに "/" は使えないので "__" 区切りにし、
+  # prepare.sh がディレクトリ構造に戻す。**モデルを足したらここにも 1 行足す。**
+  - name: sqlmesh-project
+    files:
+      - models__silver__flows.sql=models/silver/flows.sql
+      - models__gold__workload_traffic_hourly.sql=models/gold/workload_traffic_hourly.sql
+      - models__gold__namespace_traffic_hourly.sql=models/gold/namespace_traffic_hourly.sql
+      - models__gold__node_traffic_hourly.sql=models/gold/node_traffic_hourly.sql
+      - models__gold__dns_health_hourly.sql=models/gold/dns_health_hourly.sql

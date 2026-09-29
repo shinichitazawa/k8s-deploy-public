@@ -1,0 +1,25 @@
+# SAKURACLOUD_CLUSTER_CONFIG。sourceArchiveID / startupNoteID は
+# 環境ごとに確定してから埋める(プレースホルダのままでは CA が起動失敗する)。
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ca-sakura-cluster-config
+  namespace: cluster-ops
+data:
+  config.json: |
+    {
+      "zone": "tk1b",
+      "nodeGroups": {
+        "sakura-cil": {
+          "minSize": 0,
+          "maxSize": 2,
+          "core": 2,
+          "memoryGB": 4,
+          "diskGB": 20,
+          "sourceArchiveID": "000000000000",
+          "startupNoteID": "000000000000",
+          "labels": {"cloud": "sakura", "role": "sakura-spot"},
+          "taints": [{"key": "dedicated", "value": "sakura-ops", "effect": "NoSchedule"}]
+        }
+      }
+    }

@@ -1,0 +1,110 @@
+# n8n-worker の egress を最小許可(default-deny egress)。main の CNP と同趣旨。
+# 許可: DNS / 共有DB(5432) / 共有Redis(6379) / world:443(Bedrock・外部HTTP node)。
+# ingress: kubelet の health probe(host)→ :5678 のみ。
+# ※ ワークフローが叩く先が増えたら(例: kube-apiserver)ここに egress を追記する。
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: n8n-worker
+  namespace: n8n
+  labels:
+    app.kubernetes.io/name: n8n-worker
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: n8n-worker
+  ingress:
+    - fromEntities:
+        - host
+      toPorts:
+        - ports:
+            - port: "5678"
+              protocol: TCP
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            k8s-app: kube-dns
+            k8s:io.kubernetes.pod.namespace: kube-system
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+    - toEndpoints:
+        - matchLabels:
+            cluster-name: shared-db
+            k8s:io.kubernetes.pod.namespace: infra
+      toPorts:
+        - ports:
+            - port: "5432"
+              protocol: TCP
+    - toEndpoints:
+        - matchLabels:
+            app.kubernetes.io/name: shared-redis
+            k8s:io.kubernetes.pod.namespace: infra
+      toPorts:
+        - ports:
+            - port: "6379"
+              protocol: TCP
+    # YomiToku(日本語 OCR サービス)。証憑の読取をクラスタ内で完結させる。
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: ocr
+            app: yomitoku
+      toPorts:
+        - ports:
+            - { port: "8000", protocol: TCP }
+    # Prometheus(NW 監視系 WF が query。queue 化で worker 実行になったため必須。忘れると 15 分毎に全滅)
+    - toEndpoints:
+        - matchLabels:
+            app.kubernetes.io/name: prometheus
+            k8s:io.kubernetes.pod.namespace: monitoring
+      toPorts:
+        - ports:
+            - port: "9090"
+              protocol: TCP
+    # LiteLLM proxy(main の egress をミラー)
+    - toEndpoints:
+        - matchLabels:
+            app.kubernetes.io/name: litellm
+            k8s:io.kubernetes.pod.namespace: litellm
+      toPorts:
+        - ports:
+            - port: "4000"
+              protocol: TCP
+    # OpenTelemetry(実行/ノードスパンを Jaeger の OTLP/HTTP へ)。main の egress をミラーする。
+    - toEndpoints:
+        - matchLabels:
+            app: jaeger
+            k8s:io.kubernetes.pod.namespace: tracing
+      toPorts:
+        - ports:
+            - port: "4318"
+              protocol: TCP
+    # whisper(C 系 WF の音声文字起こし)
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: whisper
+      toPorts:
+        - ports:
+            - port: "9000"
+              protocol: TCP
+            - port: "9001"
+              protocol: TCP
+    # kube-apiserver(sync-public: Job 作成/監視を worker 上の HTTP Request ノードが叩く)
+    - toEntities:
+        - kube-apiserver
+      toPorts:
+        - ports:
+            - port: "6443"
+              protocol: TCP
+            - port: "443"
+              protocol: TCP
+    # 外部 HTTPS(Bedrock / 外部 API を叩く HTTP node など)。
+    - toEntities:
+        - world
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP

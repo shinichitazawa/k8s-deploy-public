@@ -1,0 +1,93 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: flow-ingest
+  labels:
+    app.kubernetes.io/name: flow-ingest
+spec:
+  replicas: 1
+  # Iceberg への書き手は 1 つにする(append の競合を避ける)。
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: flow-ingest
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: flow-ingest
+    spec:
+      automountServiceAccountToken: false
+      # requirements.lock は x86_64 向け wheel のハッシュで固定してある。
+      nodeSelector:
+        kubernetes.io/hostname: lab-worker-14
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        - name: prepare
+          image: &image python:3.14.7-slim-trixie@sha256:caaf356f40667c496d405780745b9ac25771c189a51dfcc42430d531ea09f8a2
+          command: ["sh", "/config/prepare.sh"]
+          env:
+            - {name: HOME, value: /tmp}
+            - {name: PYTHONDONTWRITEBYTECODE, value: "1"}
+          securityContext: &sc
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: ["ALL"]}
+          resources:
+            requests: {cpu: 100m, memory: 256Mi}
+            limits: {cpu: "2", memory: 1Gi}
+          volumeMounts: &mounts
+            - {name: config, mountPath: /config, readOnly: true}
+            - {name: site, mountPath: /opt/app}
+            - {name: tmp, mountPath: /tmp}
+      containers:
+        - name: flow-ingest
+          image: *image
+          command: ["python", "/config/ingest.py"]
+          env:
+            - {name: HOME, value: /tmp}
+            - {name: PYTHONPATH, value: "/opt/app:/config"}
+            - {name: PYTHONDONTWRITEBYTECODE, value: "1"}
+            - {name: PYTHONUNBUFFERED, value: "1"}
+            - {name: ICEBERG_REST_URI, value: http://lakekeeper.lakekeeper.svc.cluster.local:8181/catalog}
+            - {name: ICEBERG_WAREHOUSE, value: lakehouse}
+            - {name: ICEBERG_NAMESPACE, value: bronze}
+            - {name: ICEBERG_TABLE, value: netobserv_flows}
+            - {name: FLUSH_SECONDS, value: "60"}
+            - {name: FLUSH_ROWS, value: "20000"}
+            # S3 の鍵は持たない。SDK が IMDS を探しに行かないようにする(このクラスタでは届かない)。
+            - {name: AWS_EC2_METADATA_DISABLED, value: "true"}
+          ports:
+            - {name: grpc, containerPort: 9999}
+            - {name: http, containerPort: 8080}
+          # /livez は「flush が返ってこない(詰まり)」だけを落とす。書けないだけで pod を
+          # 入れ替えると、バッファに抱えた行が失われるうえ、入れ替えても障害は直らない。
+          # 書けているかは GET / の degraded / fail_streak を見る。
+          startupProbe:
+            httpGet: {path: /livez, port: http}
+            periodSeconds: 5
+            failureThreshold: 24
+          readinessProbe:
+            httpGet: {path: /livez, port: http}
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /livez, port: http}
+            periodSeconds: 30
+          securityContext: *sc
+          resources:
+            requests: {cpu: 100m, memory: 384Mi}
+            limits: {cpu: "1", memory: 1Gi}
+          volumeMounts: *mounts
+      volumes:
+        - name: config
+          configMap: {name: flow-ingest-config}
+        - name: site
+          emptyDir: {sizeLimit: 2Gi}
+        - name: tmp
+          emptyDir: {sizeLimit: 256Mi}

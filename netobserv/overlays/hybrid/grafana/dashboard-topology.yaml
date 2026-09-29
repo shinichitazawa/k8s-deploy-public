@@ -1,0 +1,73 @@
+# GraphRAG 依存トポロジ(topology_edges を Node Graph で可視化)。
+# データソースは PostgreSQL(graphrag)。トポロジ生成 WF が定期 materialize した
+# Owner→Owner の実測エッジ(bytes/s, RTT, 再送, drop)をそのままグラフ表示する。
+# 流量が多いほど: エッジは太く / ノードのリング(arc__hot)が赤く大きくなる。
+# 再送 or drop があるエッジは赤で強調。
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-topology
+  namespace: monitoring
+data:
+  graphrag-topology.json: |
+    {
+      "uid": "graphrag-topology",
+      "title": "GraphRAG 依存トポロジ (NetObserv flow)",
+      "timezone": "browser",
+      "schemaVersion": 39,
+      "refresh": "30s",
+      "time": {"from": "now-6h", "to": "now"},
+      "panels": [
+        {
+          "id": 1, "type": "nodeGraph",
+          "title": "サービス依存グラフ (太さ=流量, 赤リング=流量大, 赤線=再送/drop あり)",
+          "gridPos": {"h": 19, "w": 24, "x": 0, "y": 0},
+          "datasource": {"type": "postgres", "uid": "graphrag-pg"},
+          "targets": [
+            {
+              "refId": "edges", "format": "table",
+              "rawSql": "WITH e AS (SELECT * FROM topology_edges), mx AS (SELECT NULLIF(max(bytes_ps),0) m FROM e) SELECT src_owner || ' → ' || dst_owner AS id, src_owner AS source, dst_owner AS target, round(bytes_ps)::int AS mainstat, GREATEST(1, round(1 + 11*sqrt(bytes_ps/(SELECT m FROM mx)))::int) AS thickness, CASE WHEN COALESCE(retrans_ps,0)>0.01 OR COALESCE(drop_ps,0)>0.01 THEN 'red' ELSE '#4c8bf5' END AS color FROM e ORDER BY bytes_ps DESC NULLS LAST LIMIT 200"
+            },
+            {
+              "refId": "nodes", "format": "table",
+              "rawSql": "WITH n AS (SELECT o, sum(bps) AS tot FROM (SELECT src_owner AS o, bytes_ps AS bps FROM topology_edges UNION ALL SELECT dst_owner, bytes_ps FROM topology_edges) u GROUP BY o), mx AS (SELECT NULLIF(max(tot),0) m FROM n) SELECT n.o AS id, n.o AS title, round(n.tot)::int AS mainstat, LEAST(1.0, GREATEST(0.06, n.tot/(SELECT m FROM mx)))::float8 AS \"arc__hot\", (1 - LEAST(1.0, GREATEST(0.06, n.tot/(SELECT m FROM mx))))::float8 AS \"arc__cool\" FROM n"
+            }
+          ],
+          "options": {
+            "nodes": {"mainStatUnit": "Bps"},
+            "edges": {"mainStatUnit": "Bps"}
+          },
+          "fieldConfig": {
+            "defaults": {},
+            "overrides": [
+              {"matcher": {"id": "byName", "options": "arc__hot"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "red"}}]},
+              {"matcher": {"id": "byName", "options": "arc__cool"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "#2a2f38"}}]}
+            ]
+          }
+        },
+        {
+          "id": 2, "type": "table",
+          "title": "依存エッジ一覧 (流量降順)",
+          "gridPos": {"h": 11, "w": 24, "x": 0, "y": 19},
+          "datasource": {"type": "postgres", "uid": "graphrag-pg"},
+          "targets": [{
+            "refId": "A", "format": "table",
+            "rawSql": "SELECT src_ns AS \"送信元NS\", src_owner AS \"送信元\", dst_ns AS \"宛先NS\", dst_owner AS \"宛先\", round(bytes_ps)::int AS \"B/s\", round((rtt_p95_s*1000)::numeric,1) AS \"RTT p95(ms)\", round(retrans_ps::numeric,2) AS \"再送/s\", round(drop_ps::numeric,2) AS \"drop/s\", updated_at AS \"更新\" FROM topology_edges ORDER BY bytes_ps DESC NULLS LAST LIMIT 100"
+          }],
+          "fieldConfig": {
+            "defaults": {},
+            "overrides": [
+              {"matcher": {"id": "byName", "options": "B/s"}, "properties": [{"id": "custom.cellOptions", "value": {"type": "gauge", "mode": "gradient"}}, {"id": "unit", "value": "Bps"}]},
+              {"matcher": {"id": "byName", "options": "再送/s"}, "properties": [{"id": "custom.cellOptions", "value": {"type": "color-background"}}, {"id": "thresholds", "value": {"mode": "absolute", "steps": [{"color": "transparent", "value": null}, {"color": "red", "value": 0.01}]}}]},
+              {"matcher": {"id": "byName", "options": "drop/s"}, "properties": [{"id": "custom.cellOptions", "value": {"type": "color-background"}}, {"id": "thresholds", "value": {"mode": "absolute", "steps": [{"color": "transparent", "value": null}, {"color": "red", "value": 0.01}]}}]}
+            ]
+          }
+        },
+        {
+          "id": 3, "type": "text",
+          "title": "この画面について",
+          "gridPos": {"h": 5, "w": 24, "x": 0, "y": 30},
+          "options": {"mode": "markdown", "content": "NetObserv の eBPF flow から生成した **Owner→Owner の依存グラフ**(PostgreSQL `topology_edges`)。n8n の「GraphRAG トポロジ生成」ワークフローが定期的に全置換で更新する。Prometheus 由来のメトリクスではなく、材料化した隣接表を直接グラフ描画しているため、インシデント診断時の依存サブグラフ抽出(SQL)とまったく同じデータを見ている。\n\n**見方**: エッジの太さ=流量(sqrt スケール)、赤いエッジ=再送 or drop が 0.01/s 超(下の表の赤セルと同じしきい値)、ノードの赤リング(arc)=そのノードを通る総流量が大きい。ノードはドラッグで動かせ、ホバーで詳細が出る。"}
+        }
+      ]
+    }

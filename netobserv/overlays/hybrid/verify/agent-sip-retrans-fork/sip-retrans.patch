@@ -1,0 +1,992 @@
+diff --git a/bpf/configs.h b/bpf/configs.h
+index 48d675b..cc9ea63 100644
+--- a/bpf/configs.h
++++ b/bpf/configs.h
+@@ -9,6 +9,7 @@ volatile const u8 trace_messages = 0;
+ volatile const u8 enable_rtt = 0;
+ volatile const u8 enable_pca = 0;
+ volatile const u8 enable_dns_tracking = 0;
++volatile const u8 enable_sip_tracking = 0;
+ volatile const u8 enable_flows_filtering = 0;
+ volatile const u16 dns_port = 0;
+ volatile const u8 enable_network_events_monitoring = 0;
+diff --git a/bpf/flows.c b/bpf/flows.c
+index 5d1b354..6924631 100644
+--- a/bpf/flows.c
++++ b/bpf/flows.c
+@@ -21,6 +21,8 @@
+  * which attaches at kfree_skb hook. Is optional.
+  */
+ #include "pkt_drops.h"
++#include "tcp_retrans.h"
++#include "sip_tracker.h"
+ 
+ /*
+  * Defines a dns tracker,
+@@ -212,6 +214,10 @@ static inline int flow_monitor(struct __sk_buff *skb, u8 direction) {
+         dns_errno = track_dns_packet(skb, &pkt);
+     }
+ 
++    if (enable_sip_tracking) {
++        track_sip_packet(skb, &pkt, eth_protocol);
++    }
++
+     tls_info tls;
+     __builtin_memset(&tls, 0, sizeof(tls));
+     track_tls(skb, pkt.id->transport_protocol, pkt.l4_hdr, pkt.flags, &tls);
+diff --git a/bpf/maps_definition.h b/bpf/maps_definition.h
+index b46fbbc..3f0440d 100644
+--- a/bpf/maps_definition.h
++++ b/bpf/maps_definition.h
+@@ -40,6 +40,26 @@ struct {
+     __uint(pinning, LIBBPF_PIN_BY_NAME);
+ } aggregated_flows_pkt_drop SEC(".maps");
+ 
++// Key: the flow identifier. Value: SIP metrics for that identifier.
++struct {
++    __uint(type, BPF_MAP_TYPE_PERCPU_HASH);
++    __type(key, flow_id);
++    __type(value, sip_metrics);
++    __uint(max_entries, 1 << 24);
++    __uint(map_flags, BPF_F_NO_PREALLOC);
++    __uint(pinning, LIBBPF_PIN_BY_NAME);
++} aggregated_flows_sip SEC(".maps");
++
++// Key: the flow identifier. Value: TCP retransmit metrics for that identifier.
++struct {
++    __uint(type, BPF_MAP_TYPE_PERCPU_HASH);
++    __type(key, flow_id);
++    __type(value, tcp_retrans_metrics);
++    __uint(max_entries, 1 << 24);
++    __uint(map_flags, BPF_F_NO_PREALLOC);
++    __uint(pinning, LIBBPF_PIN_BY_NAME);
++} aggregated_flows_tcp_retrans SEC(".maps");
++
+ // Key: the flow identifier. Value: network events metrics for that identifier.
+ struct {
+     __uint(type, BPF_MAP_TYPE_PERCPU_HASH);
+diff --git a/bpf/types.h b/bpf/types.h
+index 88442db..bfc329e 100644
+--- a/bpf/types.h
++++ b/bpf/types.h
+@@ -150,6 +150,26 @@ typedef struct pkt_drop_metrics_t {
+     u8 latest_state;
+ } pkt_drop_metrics;
+ 
++typedef struct sip_metrics_t {
++    u64 start_mono_time_ts;
++    u64 end_mono_time_ts;
++    u32 messages;
++    u32 requests;
++    u32 responses;
++    u16 eth_protocol;
++    u16 latest_resp_code;
++    u8 latest_method;
++} sip_metrics;
++
++typedef struct tcp_retrans_metrics_t {
++    u64 start_mono_time_ts;
++    u64 end_mono_time_ts;
++    u32 packets;
++    u32 bytes;
++    u16 eth_protocol;
++    u16 latest_flags;
++} tcp_retrans_metrics;
++
+ typedef struct network_events_metrics_t {
+     u64 start_mono_time_ts;
+     u64 end_mono_time_ts;
+@@ -183,6 +203,8 @@ typedef struct additional_metrics_t {
+ // Force emitting enums/structs into the ELF
+ const static struct dns_metrics_t *unused4 __attribute__((unused));
+ const static struct pkt_drop_metrics_t *unused5 __attribute__((unused));
++const static struct tcp_retrans_metrics_t *unused20 __attribute__((unused));
++const static struct sip_metrics_t *unused21 __attribute__((unused));
+ const static struct network_events_metrics_t *unused6 __attribute__((unused));
+ const static struct xlat_metrics_t *unused13 __attribute__((unused));
+ const static struct additional_metrics_t *unused3 __attribute__((unused));
+diff --git a/pkg/config/config.go b/pkg/config/config.go
+index e86908a..f42f914 100644
+--- a/pkg/config/config.go
++++ b/pkg/config/config.go
+@@ -232,6 +232,12 @@ type Agent struct {
+ 	ForceGC bool `env:"FORCE_GARBAGE_COLLECTION" envDefault:"true"`
+ 	// EnablePktDrops enable Packet drops eBPF hook to account for dropped flows
+ 	EnablePktDrops bool `env:"ENABLE_PKT_DROPS" envDefault:"false"`
++	// EnableTcpRetrans enables per-flow TCP retransmission tracking via the
++	// tcp:tcp_retransmit_skb tracepoint (fork extension)
++	EnableTcpRetrans bool `env:"ENABLE_TCP_RETRANS" envDefault:"false"`
++	// EnableSIPTracking enables SIP (port 5060) signaling tracking in the TC
++	// path (fork extension)
++	EnableSIPTracking bool `env:"ENABLE_SIP_TRACKING" envDefault:"false"`
+ 	// EnableDNSTracking enable DNS tracking eBPF hook to track dns query/response flows
+ 	EnableDNSTracking bool `env:"ENABLE_DNS_TRACKING" envDefault:"false"`
+ 	// DNSTrackingPort used to define which port the DNS service is mapped to at the pod level,
+diff --git a/pkg/decode/decode_protobuf.go b/pkg/decode/decode_protobuf.go
+index 3897b27..2c89df2 100644
+--- a/pkg/decode/decode_protobuf.go
++++ b/pkg/decode/decode_protobuf.go
+@@ -152,6 +152,23 @@ func RecordToMap(fr *model.Record) config.GenericMap {
+ 		}
+ 	}
+ 
++	if fr.Metrics.TcpRetransMetrics != nil && fr.Metrics.TcpRetransMetrics.Packets > 0 {
++		out["TcpRetransPackets"] = fr.Metrics.TcpRetransMetrics.Packets
++		out["TcpRetransBytes"] = fr.Metrics.TcpRetransMetrics.Bytes
++	}
++
++	if fr.Metrics.SipMetrics != nil && fr.Metrics.SipMetrics.Messages > 0 {
++		out["SipMessages"] = fr.Metrics.SipMetrics.Messages
++		out["SipRequests"] = fr.Metrics.SipMetrics.Requests
++		out["SipResponses"] = fr.Metrics.SipMetrics.Responses
++		if fr.Metrics.SipMetrics.LatestMethod != 0 {
++			out["SipLatestMethod"] = sipMethodToStr(fr.Metrics.SipMetrics.LatestMethod)
++		}
++		if fr.Metrics.SipMetrics.LatestRespCode != 0 {
++			out["SipLatestRespCode"] = fr.Metrics.SipMetrics.LatestRespCode
++		}
++	}
++
+ 	if fr.Metrics.XlatMetrics != nil {
+ 		if !model.AllZeroIP(model.IP(fr.Metrics.XlatMetrics.Daddr)) &&
+ 			!model.AllZeroIP(model.IP(fr.Metrics.XlatMetrics.Saddr)) {
+@@ -462,3 +479,22 @@ func DNSRcodeToStr(rcode uint32) string {
+ 	}
+ 	return "UnDefined"
+ }
++
++func sipMethodToStr(m uint8) string {
++	switch m {
++	case 1:
++		return "INVITE"
++	case 2:
++		return "REGISTER"
++	case 3:
++		return "ACK"
++	case 4:
++		return "BYE"
++	case 5:
++		return "CANCEL"
++	case 6:
++		return "OPTIONS"
++	default:
++		return "OTHER"
++	}
++}
+diff --git a/pkg/ebpf/bpf_arm64_bpfel.go b/pkg/ebpf/bpf_arm64_bpfel.go
+index 7a6f451..167399f 100644
+--- a/pkg/ebpf/bpf_arm64_bpfel.go
++++ b/pkg/ebpf/bpf_arm64_bpfel.go
+@@ -226,6 +226,19 @@ type BpfQuicMetricsT struct {
+ 	SeenShortHdr    uint8
+ }
+ 
++type BpfSipMetrics struct {
++	_               structs.HostLayout
++	StartMonoTimeTs uint64
++	EndMonoTimeTs   uint64
++	Messages        uint32
++	Requests        uint32
++	Responses       uint32
++	EthProtocol     uint16
++	LatestRespCode  uint16
++	LatestMethod    uint8
++	_               [7]byte
++}
++
+ type BpfSslDataEventT struct {
+ 	_           structs.HostLayout
+ 	TimestampNs uint64
+@@ -252,6 +265,17 @@ const (
+ 	BpfTcpFlagsTRST_ACK_FLAG BpfTcpFlagsT = 1024
+ )
+ 
++type BpfTcpRetransMetrics struct {
++	_               structs.HostLayout
++	StartMonoTimeTs uint64
++	EndMonoTimeTs   uint64
++	Packets         uint32
++	Bytes           uint32
++	EthProtocol     uint16
++	LatestFlags     uint16
++	_               [4]byte
++}
++
+ type BpfXlatMetrics BpfXlatMetricsT
+ 
+ type BpfXlatMetricsT struct {
+@@ -275,6 +299,8 @@ const (
+ 	BpfMapAggregatedFlowsDns             = "aggregated_flows_dns"
+ 	BpfMapAggregatedFlowsNetworkEvents   = "aggregated_flows_network_events"
+ 	BpfMapAggregatedFlowsPktDrop         = "aggregated_flows_pkt_drop"
++	BpfMapAggregatedFlowsSip             = "aggregated_flows_sip"
++	BpfMapAggregatedFlowsTcpRetrans      = "aggregated_flows_tcp_retrans"
+ 	BpfMapAggregatedFlowsXlat            = "aggregated_flows_xlat"
+ 	BpfMapDirectFlows                    = "direct_flows"
+ 	BpfMapDnsFlows                       = "dns_flows"
+@@ -300,6 +326,7 @@ const (
+ 	BpfProgTcIngressPcaParse             = "tc_ingress_pca_parse"
+ 	BpfProgTcpRcvFentry                  = "tcp_rcv_fentry"
+ 	BpfProgTcpRcvKprobe                  = "tcp_rcv_kprobe"
++	BpfProgTcpRetransmitSkb              = "tcp_retransmit_skb"
+ 	BpfProgTcxEgressFlowParse            = "tcx_egress_flow_parse"
+ 	BpfProgTcxEgressPcaParse             = "tcx_egress_pca_parse"
+ 	BpfProgTcxIngressFlowParse           = "tcx_ingress_flow_parse"
+@@ -320,6 +347,7 @@ const (
+ 	BpfVarEnablePktTranslationTracking   = "enable_pkt_translation_tracking"
+ 	BpfVarEnableQuicTracking             = "enable_quic_tracking"
+ 	BpfVarEnableRtt                      = "enable_rtt"
++	BpfVarEnableSipTracking              = "enable_sip_tracking"
+ 	BpfVarEnableTlsUsageTracking         = "enable_tls_usage_tracking"
+ 	BpfVarFilterKey                      = "filter_key"
+ 	BpfVarFilterValue                    = "filter_value"
+@@ -387,6 +415,7 @@ type BpfProgramSpecs struct {
+ 	TcIngressPcaParse       *ebpf.ProgramSpec `ebpf:"tc_ingress_pca_parse"`
+ 	TcpRcvFentry            *ebpf.ProgramSpec `ebpf:"tcp_rcv_fentry"`
+ 	TcpRcvKprobe            *ebpf.ProgramSpec `ebpf:"tcp_rcv_kprobe"`
++	TcpRetransmitSkb        *ebpf.ProgramSpec `ebpf:"tcp_retransmit_skb"`
+ 	TcxEgressFlowParse      *ebpf.ProgramSpec `ebpf:"tcx_egress_flow_parse"`
+ 	TcxEgressPcaParse       *ebpf.ProgramSpec `ebpf:"tcx_egress_pca_parse"`
+ 	TcxIngressFlowParse     *ebpf.ProgramSpec `ebpf:"tcx_ingress_flow_parse"`
+@@ -407,6 +436,8 @@ type BpfMapSpecs struct {
+ 	AggregatedFlowsDns           *ebpf.MapSpec `ebpf:"aggregated_flows_dns"`
+ 	AggregatedFlowsNetworkEvents *ebpf.MapSpec `ebpf:"aggregated_flows_network_events"`
+ 	AggregatedFlowsPktDrop       *ebpf.MapSpec `ebpf:"aggregated_flows_pkt_drop"`
++	AggregatedFlowsSip           *ebpf.MapSpec `ebpf:"aggregated_flows_sip"`
++	AggregatedFlowsTcpRetrans    *ebpf.MapSpec `ebpf:"aggregated_flows_tcp_retrans"`
+ 	AggregatedFlowsXlat          *ebpf.MapSpec `ebpf:"aggregated_flows_xlat"`
+ 	DirectFlows                  *ebpf.MapSpec `ebpf:"direct_flows"`
+ 	DnsFlows                     *ebpf.MapSpec `ebpf:"dns_flows"`
+@@ -436,6 +467,7 @@ type BpfVariableSpecs struct {
+ 	EnablePktTranslationTracking   *ebpf.VariableSpec `ebpf:"enable_pkt_translation_tracking"`
+ 	EnableQuicTracking             *ebpf.VariableSpec `ebpf:"enable_quic_tracking"`
+ 	EnableRtt                      *ebpf.VariableSpec `ebpf:"enable_rtt"`
++	EnableSipTracking              *ebpf.VariableSpec `ebpf:"enable_sip_tracking"`
+ 	EnableTlsUsageTracking         *ebpf.VariableSpec `ebpf:"enable_tls_usage_tracking"`
+ 	FilterKey                      *ebpf.VariableSpec `ebpf:"filter_key"`
+ 	FilterValue                    *ebpf.VariableSpec `ebpf:"filter_value"`
+@@ -473,6 +505,8 @@ type BpfMaps struct {
+ 	AggregatedFlowsDns           *ebpf.Map `ebpf:"aggregated_flows_dns"`
+ 	AggregatedFlowsNetworkEvents *ebpf.Map `ebpf:"aggregated_flows_network_events"`
+ 	AggregatedFlowsPktDrop       *ebpf.Map `ebpf:"aggregated_flows_pkt_drop"`
++	AggregatedFlowsSip           *ebpf.Map `ebpf:"aggregated_flows_sip"`
++	AggregatedFlowsTcpRetrans    *ebpf.Map `ebpf:"aggregated_flows_tcp_retrans"`
+ 	AggregatedFlowsXlat          *ebpf.Map `ebpf:"aggregated_flows_xlat"`
+ 	DirectFlows                  *ebpf.Map `ebpf:"direct_flows"`
+ 	DnsFlows                     *ebpf.Map `ebpf:"dns_flows"`
+@@ -494,6 +528,8 @@ func (m *BpfMaps) Close() error {
+ 		m.AggregatedFlowsDns,
+ 		m.AggregatedFlowsNetworkEvents,
+ 		m.AggregatedFlowsPktDrop,
++		m.AggregatedFlowsSip,
++		m.AggregatedFlowsTcpRetrans,
+ 		m.AggregatedFlowsXlat,
+ 		m.DirectFlows,
+ 		m.DnsFlows,
+@@ -524,6 +560,7 @@ type BpfVariables struct {
+ 	EnablePktTranslationTracking   *ebpf.Variable `ebpf:"enable_pkt_translation_tracking"`
+ 	EnableQuicTracking             *ebpf.Variable `ebpf:"enable_quic_tracking"`
+ 	EnableRtt                      *ebpf.Variable `ebpf:"enable_rtt"`
++	EnableSipTracking              *ebpf.Variable `ebpf:"enable_sip_tracking"`
+ 	EnableTlsUsageTracking         *ebpf.Variable `ebpf:"enable_tls_usage_tracking"`
+ 	FilterKey                      *ebpf.Variable `ebpf:"filter_key"`
+ 	FilterValue                    *ebpf.Variable `ebpf:"filter_value"`
+@@ -553,6 +590,7 @@ type BpfPrograms struct {
+ 	TcIngressPcaParse       *ebpf.Program `ebpf:"tc_ingress_pca_parse"`
+ 	TcpRcvFentry            *ebpf.Program `ebpf:"tcp_rcv_fentry"`
+ 	TcpRcvKprobe            *ebpf.Program `ebpf:"tcp_rcv_kprobe"`
++	TcpRetransmitSkb        *ebpf.Program `ebpf:"tcp_retransmit_skb"`
+ 	TcxEgressFlowParse      *ebpf.Program `ebpf:"tcx_egress_flow_parse"`
+ 	TcxEgressPcaParse       *ebpf.Program `ebpf:"tcx_egress_pca_parse"`
+ 	TcxIngressFlowParse     *ebpf.Program `ebpf:"tcx_ingress_flow_parse"`
+@@ -579,6 +617,7 @@ func (p *BpfPrograms) Close() error {
+ 		p.TcIngressPcaParse,
+ 		p.TcpRcvFentry,
+ 		p.TcpRcvKprobe,
++		p.TcpRetransmitSkb,
+ 		p.TcxEgressFlowParse,
+ 		p.TcxEgressPcaParse,
+ 		p.TcxIngressFlowParse,
+diff --git a/pkg/ebpf/bpf_arm64_bpfel.o b/pkg/ebpf/bpf_arm64_bpfel.o
+index 7d2eab8..fb92984 100644
+Binary files a/pkg/ebpf/bpf_arm64_bpfel.o and b/pkg/ebpf/bpf_arm64_bpfel.o differ
+diff --git a/pkg/ebpf/bpf_powerpc_bpfel.go b/pkg/ebpf/bpf_powerpc_bpfel.go
+index a457433..7e7b5e0 100644
+--- a/pkg/ebpf/bpf_powerpc_bpfel.go
++++ b/pkg/ebpf/bpf_powerpc_bpfel.go
+@@ -226,6 +226,19 @@ type BpfQuicMetricsT struct {
+ 	SeenShortHdr    uint8
+ }
+ 
++type BpfSipMetrics struct {
++	_               structs.HostLayout
++	StartMonoTimeTs uint64
++	EndMonoTimeTs   uint64
++	Messages        uint32
++	Requests        uint32
++	Responses       uint32
++	EthProtocol     uint16
++	LatestRespCode  uint16
++	LatestMethod    uint8
++	_               [7]byte
++}
++
+ type BpfSslDataEventT struct {
+ 	_           structs.HostLayout
+ 	TimestampNs uint64
+@@ -252,6 +265,17 @@ const (
+ 	BpfTcpFlagsTRST_ACK_FLAG BpfTcpFlagsT = 1024
+ )
+ 
++type BpfTcpRetransMetrics struct {
++	_               structs.HostLayout
++	StartMonoTimeTs uint64
++	EndMonoTimeTs   uint64
++	Packets         uint32
++	Bytes           uint32
++	EthProtocol     uint16
++	LatestFlags     uint16
++	_               [4]byte
++}
++
+ type BpfXlatMetrics BpfXlatMetricsT
+ 
+ type BpfXlatMetricsT struct {
+@@ -275,6 +299,8 @@ const (
+ 	BpfMapAggregatedFlowsDns             = "aggregated_flows_dns"
+ 	BpfMapAggregatedFlowsNetworkEvents   = "aggregated_flows_network_events"
+ 	BpfMapAggregatedFlowsPktDrop         = "aggregated_flows_pkt_drop"
++	BpfMapAggregatedFlowsSip             = "aggregated_flows_sip"
++	BpfMapAggregatedFlowsTcpRetrans      = "aggregated_flows_tcp_retrans"
+ 	BpfMapAggregatedFlowsXlat            = "aggregated_flows_xlat"
+ 	BpfMapDirectFlows                    = "direct_flows"
+ 	BpfMapDnsFlows                       = "dns_flows"
+@@ -300,6 +326,7 @@ const (
+ 	BpfProgTcIngressPcaParse             = "tc_ingress_pca_parse"
+ 	BpfProgTcpRcvFentry                  = "tcp_rcv_fentry"
+ 	BpfProgTcpRcvKprobe                  = "tcp_rcv_kprobe"
++	BpfProgTcpRetransmitSkb              = "tcp_retransmit_skb"
+ 	BpfProgTcxEgressFlowParse            = "tcx_egress_flow_parse"
+ 	BpfProgTcxEgressPcaParse             = "tcx_egress_pca_parse"
+ 	BpfProgTcxIngressFlowParse           = "tcx_ingress_flow_parse"
+@@ -320,6 +347,7 @@ const (
+ 	BpfVarEnablePktTranslationTracking   = "enable_pkt_translation_tracking"
+ 	BpfVarEnableQuicTracking             = "enable_quic_tracking"
+ 	BpfVarEnableRtt                      = "enable_rtt"
++	BpfVarEnableSipTracking              = "enable_sip_tracking"
+ 	BpfVarEnableTlsUsageTracking         = "enable_tls_usage_tracking"
+ 	BpfVarFilterKey                      = "filter_key"
+ 	BpfVarFilterValue                    = "filter_value"
+@@ -387,6 +415,7 @@ type BpfProgramSpecs struct {
+ 	TcIngressPcaParse       *ebpf.ProgramSpec `ebpf:"tc_ingress_pca_parse"`
+ 	TcpRcvFentry            *ebpf.ProgramSpec `ebpf:"tcp_rcv_fentry"`
+ 	TcpRcvKprobe            *ebpf.ProgramSpec `ebpf:"tcp_rcv_kprobe"`
++	TcpRetransmitSkb        *ebpf.ProgramSpec `ebpf:"tcp_retransmit_skb"`
+ 	TcxEgressFlowParse      *ebpf.ProgramSpec `ebpf:"tcx_egress_flow_parse"`
+ 	TcxEgressPcaParse       *ebpf.ProgramSpec `ebpf:"tcx_egress_pca_parse"`
+ 	TcxIngressFlowParse     *ebpf.ProgramSpec `ebpf:"tcx_ingress_flow_parse"`
+@@ -407,6 +436,8 @@ type BpfMapSpecs struct {
+ 	AggregatedFlowsDns           *ebpf.MapSpec `ebpf:"aggregated_flows_dns"`
+ 	AggregatedFlowsNetworkEvents *ebpf.MapSpec `ebpf:"aggregated_flows_network_events"`
+ 	AggregatedFlowsPktDrop       *ebpf.MapSpec `ebpf:"aggregated_flows_pkt_drop"`
++	AggregatedFlowsSip           *ebpf.MapSpec `ebpf:"aggregated_flows_sip"`
++	AggregatedFlowsTcpRetrans    *ebpf.MapSpec `ebpf:"aggregated_flows_tcp_retrans"`
+ 	AggregatedFlowsXlat          *ebpf.MapSpec `ebpf:"aggregated_flows_xlat"`
+ 	DirectFlows                  *ebpf.MapSpec `ebpf:"direct_flows"`
+ 	DnsFlows                     *ebpf.MapSpec `ebpf:"dns_flows"`
+@@ -436,6 +467,7 @@ type BpfVariableSpecs struct {
+ 	EnablePktTranslationTracking   *ebpf.VariableSpec `ebpf:"enable_pkt_translation_tracking"`
+ 	EnableQuicTracking             *ebpf.VariableSpec `ebpf:"enable_quic_tracking"`
+ 	EnableRtt                      *ebpf.VariableSpec `ebpf:"enable_rtt"`
++	EnableSipTracking              *ebpf.VariableSpec `ebpf:"enable_sip_tracking"`
+ 	EnableTlsUsageTracking         *ebpf.VariableSpec `ebpf:"enable_tls_usage_tracking"`
+ 	FilterKey                      *ebpf.VariableSpec `ebpf:"filter_key"`
+ 	FilterValue                    *ebpf.VariableSpec `ebpf:"filter_value"`
+@@ -473,6 +505,8 @@ type BpfMaps struct {
+ 	AggregatedFlowsDns           *ebpf.Map `ebpf:"aggregated_flows_dns"`
+ 	AggregatedFlowsNetworkEvents *ebpf.Map `ebpf:"aggregated_flows_network_events"`
+ 	AggregatedFlowsPktDrop       *ebpf.Map `ebpf:"aggregated_flows_pkt_drop"`
++	AggregatedFlowsSip           *ebpf.Map `ebpf:"aggregated_flows_sip"`
++	AggregatedFlowsTcpRetrans    *ebpf.Map `ebpf:"aggregated_flows_tcp_retrans"`
+ 	AggregatedFlowsXlat          *ebpf.Map `ebpf:"aggregated_flows_xlat"`
+ 	DirectFlows                  *ebpf.Map `ebpf:"direct_flows"`
+ 	DnsFlows                     *ebpf.Map `ebpf:"dns_flows"`
+@@ -494,6 +528,8 @@ func (m *BpfMaps) Close() error {
+ 		m.AggregatedFlowsDns,
+ 		m.AggregatedFlowsNetworkEvents,
+ 		m.AggregatedFlowsPktDrop,
++		m.AggregatedFlowsSip,
++		m.AggregatedFlowsTcpRetrans,
+ 		m.AggregatedFlowsXlat,
+ 		m.DirectFlows,
+ 		m.DnsFlows,
+@@ -524,6 +560,7 @@ type BpfVariables struct {
+ 	EnablePktTranslationTracking   *ebpf.Variable `ebpf:"enable_pkt_translation_tracking"`
+ 	EnableQuicTracking             *ebpf.Variable `ebpf:"enable_quic_tracking"`
+ 	EnableRtt                      *ebpf.Variable `ebpf:"enable_rtt"`
++	EnableSipTracking              *ebpf.Variable `ebpf:"enable_sip_tracking"`
+ 	EnableTlsUsageTracking         *ebpf.Variable `ebpf:"enable_tls_usage_tracking"`
+ 	FilterKey                      *ebpf.Variable `ebpf:"filter_key"`
+ 	FilterValue                    *ebpf.Variable `ebpf:"filter_value"`
+@@ -553,6 +590,7 @@ type BpfPrograms struct {
+ 	TcIngressPcaParse       *ebpf.Program `ebpf:"tc_ingress_pca_parse"`
+ 	TcpRcvFentry            *ebpf.Program `ebpf:"tcp_rcv_fentry"`
+ 	TcpRcvKprobe            *ebpf.Program `ebpf:"tcp_rcv_kprobe"`
++	TcpRetransmitSkb        *ebpf.Program `ebpf:"tcp_retransmit_skb"`
+ 	TcxEgressFlowParse      *ebpf.Program `ebpf:"tcx_egress_flow_parse"`
+ 	TcxEgressPcaParse       *ebpf.Program `ebpf:"tcx_egress_pca_parse"`
+ 	TcxIngressFlowParse     *ebpf.Program `ebpf:"tcx_ingress_flow_parse"`
+@@ -579,6 +617,7 @@ func (p *BpfPrograms) Close() error {
+ 		p.TcIngressPcaParse,
+ 		p.TcpRcvFentry,
+ 		p.TcpRcvKprobe,
++		p.TcpRetransmitSkb,
+ 		p.TcxEgressFlowParse,
+ 		p.TcxEgressPcaParse,
+ 		p.TcxIngressFlowParse,
+diff --git a/pkg/ebpf/bpf_powerpc_bpfel.o b/pkg/ebpf/bpf_powerpc_bpfel.o
+index 6b7fa47..85f874e 100644
+Binary files a/pkg/ebpf/bpf_powerpc_bpfel.o and b/pkg/ebpf/bpf_powerpc_bpfel.o differ
+diff --git a/pkg/ebpf/bpf_s390_bpfeb.go b/pkg/ebpf/bpf_s390_bpfeb.go
+index 958a722..3cfb111 100644
+--- a/pkg/ebpf/bpf_s390_bpfeb.go
++++ b/pkg/ebpf/bpf_s390_bpfeb.go
+@@ -226,6 +226,19 @@ type BpfQuicMetricsT struct {
+ 	SeenShortHdr    uint8
+ }
+ 
++type BpfSipMetrics struct {
++	_               structs.HostLayout
++	StartMonoTimeTs uint64
++	EndMonoTimeTs   uint64
++	Messages        uint32
++	Requests        uint32
++	Responses       uint32
++	EthProtocol     uint16
++	LatestRespCode  uint16
++	LatestMethod    uint8
++	_               [7]byte
++}
++
+ type BpfSslDataEventT struct {
+ 	_           structs.HostLayout
+ 	TimestampNs uint64
+@@ -252,6 +265,17 @@ const (
+ 	BpfTcpFlagsTRST_ACK_FLAG BpfTcpFlagsT = 1024
+ )
+ 
++type BpfTcpRetransMetrics struct {
++	_               structs.HostLayout
++	StartMonoTimeTs uint64
++	EndMonoTimeTs   uint64
++	Packets         uint32
++	Bytes           uint32
++	EthProtocol     uint16
++	LatestFlags     uint16
++	_               [4]byte
++}
++
+ type BpfXlatMetrics BpfXlatMetricsT
+ 
+ type BpfXlatMetricsT struct {
+@@ -275,6 +299,8 @@ const (
+ 	BpfMapAggregatedFlowsDns             = "aggregated_flows_dns"
+ 	BpfMapAggregatedFlowsNetworkEvents   = "aggregated_flows_network_events"
+ 	BpfMapAggregatedFlowsPktDrop         = "aggregated_flows_pkt_drop"
++	BpfMapAggregatedFlowsSip             = "aggregated_flows_sip"
++	BpfMapAggregatedFlowsTcpRetrans      = "aggregated_flows_tcp_retrans"
+ 	BpfMapAggregatedFlowsXlat            = "aggregated_flows_xlat"
+ 	BpfMapDirectFlows                    = "direct_flows"
+ 	BpfMapDnsFlows                       = "dns_flows"
+@@ -300,6 +326,7 @@ const (
+ 	BpfProgTcIngressPcaParse             = "tc_ingress_pca_parse"
+ 	BpfProgTcpRcvFentry                  = "tcp_rcv_fentry"
+ 	BpfProgTcpRcvKprobe                  = "tcp_rcv_kprobe"
++	BpfProgTcpRetransmitSkb              = "tcp_retransmit_skb"
+ 	BpfProgTcxEgressFlowParse            = "tcx_egress_flow_parse"
+ 	BpfProgTcxEgressPcaParse             = "tcx_egress_pca_parse"
+ 	BpfProgTcxIngressFlowParse           = "tcx_ingress_flow_parse"
+@@ -320,6 +347,7 @@ const (
+ 	BpfVarEnablePktTranslationTracking   = "enable_pkt_translation_tracking"
+ 	BpfVarEnableQuicTracking             = "enable_quic_tracking"
+ 	BpfVarEnableRtt                      = "enable_rtt"
++	BpfVarEnableSipTracking              = "enable_sip_tracking"
+ 	BpfVarEnableTlsUsageTracking         = "enable_tls_usage_tracking"
+ 	BpfVarFilterKey                      = "filter_key"
+ 	BpfVarFilterValue                    = "filter_value"
+@@ -387,6 +415,7 @@ type BpfProgramSpecs struct {
+ 	TcIngressPcaParse       *ebpf.ProgramSpec `ebpf:"tc_ingress_pca_parse"`
+ 	TcpRcvFentry            *ebpf.ProgramSpec `ebpf:"tcp_rcv_fentry"`
+ 	TcpRcvKprobe            *ebpf.ProgramSpec `ebpf:"tcp_rcv_kprobe"`
++	TcpRetransmitSkb        *ebpf.ProgramSpec `ebpf:"tcp_retransmit_skb"`
+ 	TcxEgressFlowParse      *ebpf.ProgramSpec `ebpf:"tcx_egress_flow_parse"`
+ 	TcxEgressPcaParse       *ebpf.ProgramSpec `ebpf:"tcx_egress_pca_parse"`
+ 	TcxIngressFlowParse     *ebpf.ProgramSpec `ebpf:"tcx_ingress_flow_parse"`
+@@ -407,6 +436,8 @@ type BpfMapSpecs struct {
+ 	AggregatedFlowsDns           *ebpf.MapSpec `ebpf:"aggregated_flows_dns"`
+ 	AggregatedFlowsNetworkEvents *ebpf.MapSpec `ebpf:"aggregated_flows_network_events"`
+ 	AggregatedFlowsPktDrop       *ebpf.MapSpec `ebpf:"aggregated_flows_pkt_drop"`
++	AggregatedFlowsSip           *ebpf.MapSpec `ebpf:"aggregated_flows_sip"`
++	AggregatedFlowsTcpRetrans    *ebpf.MapSpec `ebpf:"aggregated_flows_tcp_retrans"`
+ 	AggregatedFlowsXlat          *ebpf.MapSpec `ebpf:"aggregated_flows_xlat"`
+ 	DirectFlows                  *ebpf.MapSpec `ebpf:"direct_flows"`
+ 	DnsFlows                     *ebpf.MapSpec `ebpf:"dns_flows"`
+@@ -436,6 +467,7 @@ type BpfVariableSpecs struct {
+ 	EnablePktTranslationTracking   *ebpf.VariableSpec `ebpf:"enable_pkt_translation_tracking"`
+ 	EnableQuicTracking             *ebpf.VariableSpec `ebpf:"enable_quic_tracking"`
+ 	EnableRtt                      *ebpf.VariableSpec `ebpf:"enable_rtt"`
++	EnableSipTracking              *ebpf.VariableSpec `ebpf:"enable_sip_tracking"`
+ 	EnableTlsUsageTracking         *ebpf.VariableSpec `ebpf:"enable_tls_usage_tracking"`
+ 	FilterKey                      *ebpf.VariableSpec `ebpf:"filter_key"`
+ 	FilterValue                    *ebpf.VariableSpec `ebpf:"filter_value"`
+@@ -473,6 +505,8 @@ type BpfMaps struct {
+ 	AggregatedFlowsDns           *ebpf.Map `ebpf:"aggregated_flows_dns"`
+ 	AggregatedFlowsNetworkEvents *ebpf.Map `ebpf:"aggregated_flows_network_events"`
+ 	AggregatedFlowsPktDrop       *ebpf.Map `ebpf:"aggregated_flows_pkt_drop"`
++	AggregatedFlowsSip           *ebpf.Map `ebpf:"aggregated_flows_sip"`
++	AggregatedFlowsTcpRetrans    *ebpf.Map `ebpf:"aggregated_flows_tcp_retrans"`
+ 	AggregatedFlowsXlat          *ebpf.Map `ebpf:"aggregated_flows_xlat"`
+ 	DirectFlows                  *ebpf.Map `ebpf:"direct_flows"`
+ 	DnsFlows                     *ebpf.Map `ebpf:"dns_flows"`
+@@ -494,6 +528,8 @@ func (m *BpfMaps) Close() error {
+ 		m.AggregatedFlowsDns,
+ 		m.AggregatedFlowsNetworkEvents,
+ 		m.AggregatedFlowsPktDrop,
++		m.AggregatedFlowsSip,
++		m.AggregatedFlowsTcpRetrans,
+ 		m.AggregatedFlowsXlat,
+ 		m.DirectFlows,
+ 		m.DnsFlows,
+@@ -524,6 +560,7 @@ type BpfVariables struct {
+ 	EnablePktTranslationTracking   *ebpf.Variable `ebpf:"enable_pkt_translation_tracking"`
+ 	EnableQuicTracking             *ebpf.Variable `ebpf:"enable_quic_tracking"`
+ 	EnableRtt                      *ebpf.Variable `ebpf:"enable_rtt"`
++	EnableSipTracking              *ebpf.Variable `ebpf:"enable_sip_tracking"`
+ 	EnableTlsUsageTracking         *ebpf.Variable `ebpf:"enable_tls_usage_tracking"`
+ 	FilterKey                      *ebpf.Variable `ebpf:"filter_key"`
+ 	FilterValue                    *ebpf.Variable `ebpf:"filter_value"`
+@@ -553,6 +590,7 @@ type BpfPrograms struct {
+ 	TcIngressPcaParse       *ebpf.Program `ebpf:"tc_ingress_pca_parse"`
+ 	TcpRcvFentry            *ebpf.Program `ebpf:"tcp_rcv_fentry"`
+ 	TcpRcvKprobe            *ebpf.Program `ebpf:"tcp_rcv_kprobe"`
++	TcpRetransmitSkb        *ebpf.Program `ebpf:"tcp_retransmit_skb"`
+ 	TcxEgressFlowParse      *ebpf.Program `ebpf:"tcx_egress_flow_parse"`
+ 	TcxEgressPcaParse       *ebpf.Program `ebpf:"tcx_egress_pca_parse"`
+ 	TcxIngressFlowParse     *ebpf.Program `ebpf:"tcx_ingress_flow_parse"`
+@@ -579,6 +617,7 @@ func (p *BpfPrograms) Close() error {
+ 		p.TcIngressPcaParse,
+ 		p.TcpRcvFentry,
+ 		p.TcpRcvKprobe,
++		p.TcpRetransmitSkb,
+ 		p.TcxEgressFlowParse,
+ 		p.TcxEgressPcaParse,
+ 		p.TcxIngressFlowParse,
+diff --git a/pkg/ebpf/bpf_s390_bpfeb.o b/pkg/ebpf/bpf_s390_bpfeb.o
+index 327acc6..f7bc1bd 100644
+Binary files a/pkg/ebpf/bpf_s390_bpfeb.o and b/pkg/ebpf/bpf_s390_bpfeb.o differ
+diff --git a/pkg/ebpf/bpf_x86_bpfel.go b/pkg/ebpf/bpf_x86_bpfel.go
+index b2a82a0..a47aa9d 100644
+--- a/pkg/ebpf/bpf_x86_bpfel.go
++++ b/pkg/ebpf/bpf_x86_bpfel.go
+@@ -226,6 +226,19 @@ type BpfQuicMetricsT struct {
+ 	SeenShortHdr    uint8
+ }
+ 
++type BpfSipMetrics struct {
++	_               structs.HostLayout
++	StartMonoTimeTs uint64
++	EndMonoTimeTs   uint64
++	Messages        uint32
++	Requests        uint32
++	Responses       uint32
++	EthProtocol     uint16
++	LatestRespCode  uint16
++	LatestMethod    uint8
++	_               [7]byte
++}
++
+ type BpfSslDataEventT struct {
+ 	_           structs.HostLayout
+ 	TimestampNs uint64
+@@ -252,6 +265,17 @@ const (
+ 	BpfTcpFlagsTRST_ACK_FLAG BpfTcpFlagsT = 1024
+ )
+ 
++type BpfTcpRetransMetrics struct {
++	_               structs.HostLayout
++	StartMonoTimeTs uint64
++	EndMonoTimeTs   uint64
++	Packets         uint32
++	Bytes           uint32
++	EthProtocol     uint16
++	LatestFlags     uint16
++	_               [4]byte
++}
++
+ type BpfXlatMetrics BpfXlatMetricsT
+ 
+ type BpfXlatMetricsT struct {
+@@ -275,6 +299,8 @@ const (
+ 	BpfMapAggregatedFlowsDns             = "aggregated_flows_dns"
+ 	BpfMapAggregatedFlowsNetworkEvents   = "aggregated_flows_network_events"
+ 	BpfMapAggregatedFlowsPktDrop         = "aggregated_flows_pkt_drop"
++	BpfMapAggregatedFlowsSip             = "aggregated_flows_sip"
++	BpfMapAggregatedFlowsTcpRetrans      = "aggregated_flows_tcp_retrans"
+ 	BpfMapAggregatedFlowsXlat            = "aggregated_flows_xlat"
+ 	BpfMapDirectFlows                    = "direct_flows"
+ 	BpfMapDnsFlows                       = "dns_flows"
+@@ -300,6 +326,7 @@ const (
+ 	BpfProgTcIngressPcaParse             = "tc_ingress_pca_parse"
+ 	BpfProgTcpRcvFentry                  = "tcp_rcv_fentry"
+ 	BpfProgTcpRcvKprobe                  = "tcp_rcv_kprobe"
++	BpfProgTcpRetransmitSkb              = "tcp_retransmit_skb"
+ 	BpfProgTcxEgressFlowParse            = "tcx_egress_flow_parse"
+ 	BpfProgTcxEgressPcaParse             = "tcx_egress_pca_parse"
+ 	BpfProgTcxIngressFlowParse           = "tcx_ingress_flow_parse"
+@@ -320,6 +347,7 @@ const (
+ 	BpfVarEnablePktTranslationTracking   = "enable_pkt_translation_tracking"
+ 	BpfVarEnableQuicTracking             = "enable_quic_tracking"
+ 	BpfVarEnableRtt                      = "enable_rtt"
++	BpfVarEnableSipTracking              = "enable_sip_tracking"
+ 	BpfVarEnableTlsUsageTracking         = "enable_tls_usage_tracking"
+ 	BpfVarFilterKey                      = "filter_key"
+ 	BpfVarFilterValue                    = "filter_value"
+@@ -387,6 +415,7 @@ type BpfProgramSpecs struct {
+ 	TcIngressPcaParse       *ebpf.ProgramSpec `ebpf:"tc_ingress_pca_parse"`
+ 	TcpRcvFentry            *ebpf.ProgramSpec `ebpf:"tcp_rcv_fentry"`
+ 	TcpRcvKprobe            *ebpf.ProgramSpec `ebpf:"tcp_rcv_kprobe"`
++	TcpRetransmitSkb        *ebpf.ProgramSpec `ebpf:"tcp_retransmit_skb"`
+ 	TcxEgressFlowParse      *ebpf.ProgramSpec `ebpf:"tcx_egress_flow_parse"`
+ 	TcxEgressPcaParse       *ebpf.ProgramSpec `ebpf:"tcx_egress_pca_parse"`
+ 	TcxIngressFlowParse     *ebpf.ProgramSpec `ebpf:"tcx_ingress_flow_parse"`
+@@ -407,6 +436,8 @@ type BpfMapSpecs struct {
+ 	AggregatedFlowsDns           *ebpf.MapSpec `ebpf:"aggregated_flows_dns"`
+ 	AggregatedFlowsNetworkEvents *ebpf.MapSpec `ebpf:"aggregated_flows_network_events"`
+ 	AggregatedFlowsPktDrop       *ebpf.MapSpec `ebpf:"aggregated_flows_pkt_drop"`
++	AggregatedFlowsSip           *ebpf.MapSpec `ebpf:"aggregated_flows_sip"`
++	AggregatedFlowsTcpRetrans    *ebpf.MapSpec `ebpf:"aggregated_flows_tcp_retrans"`
+ 	AggregatedFlowsXlat          *ebpf.MapSpec `ebpf:"aggregated_flows_xlat"`
+ 	DirectFlows                  *ebpf.MapSpec `ebpf:"direct_flows"`
+ 	DnsFlows                     *ebpf.MapSpec `ebpf:"dns_flows"`
+@@ -436,6 +467,7 @@ type BpfVariableSpecs struct {
+ 	EnablePktTranslationTracking   *ebpf.VariableSpec `ebpf:"enable_pkt_translation_tracking"`
+ 	EnableQuicTracking             *ebpf.VariableSpec `ebpf:"enable_quic_tracking"`
+ 	EnableRtt                      *ebpf.VariableSpec `ebpf:"enable_rtt"`
++	EnableSipTracking              *ebpf.VariableSpec `ebpf:"enable_sip_tracking"`
+ 	EnableTlsUsageTracking         *ebpf.VariableSpec `ebpf:"enable_tls_usage_tracking"`
+ 	FilterKey                      *ebpf.VariableSpec `ebpf:"filter_key"`
+ 	FilterValue                    *ebpf.VariableSpec `ebpf:"filter_value"`
+@@ -473,6 +505,8 @@ type BpfMaps struct {
+ 	AggregatedFlowsDns           *ebpf.Map `ebpf:"aggregated_flows_dns"`
+ 	AggregatedFlowsNetworkEvents *ebpf.Map `ebpf:"aggregated_flows_network_events"`
+ 	AggregatedFlowsPktDrop       *ebpf.Map `ebpf:"aggregated_flows_pkt_drop"`
++	AggregatedFlowsSip           *ebpf.Map `ebpf:"aggregated_flows_sip"`
++	AggregatedFlowsTcpRetrans    *ebpf.Map `ebpf:"aggregated_flows_tcp_retrans"`
+ 	AggregatedFlowsXlat          *ebpf.Map `ebpf:"aggregated_flows_xlat"`
+ 	DirectFlows                  *ebpf.Map `ebpf:"direct_flows"`
+ 	DnsFlows                     *ebpf.Map `ebpf:"dns_flows"`
+@@ -494,6 +528,8 @@ func (m *BpfMaps) Close() error {
+ 		m.AggregatedFlowsDns,
+ 		m.AggregatedFlowsNetworkEvents,
+ 		m.AggregatedFlowsPktDrop,
++		m.AggregatedFlowsSip,
++		m.AggregatedFlowsTcpRetrans,
+ 		m.AggregatedFlowsXlat,
+ 		m.DirectFlows,
+ 		m.DnsFlows,
+@@ -524,6 +560,7 @@ type BpfVariables struct {
+ 	EnablePktTranslationTracking   *ebpf.Variable `ebpf:"enable_pkt_translation_tracking"`
+ 	EnableQuicTracking             *ebpf.Variable `ebpf:"enable_quic_tracking"`
+ 	EnableRtt                      *ebpf.Variable `ebpf:"enable_rtt"`
++	EnableSipTracking              *ebpf.Variable `ebpf:"enable_sip_tracking"`
+ 	EnableTlsUsageTracking         *ebpf.Variable `ebpf:"enable_tls_usage_tracking"`
+ 	FilterKey                      *ebpf.Variable `ebpf:"filter_key"`
+ 	FilterValue                    *ebpf.Variable `ebpf:"filter_value"`
+@@ -553,6 +590,7 @@ type BpfPrograms struct {
+ 	TcIngressPcaParse       *ebpf.Program `ebpf:"tc_ingress_pca_parse"`
+ 	TcpRcvFentry            *ebpf.Program `ebpf:"tcp_rcv_fentry"`
+ 	TcpRcvKprobe            *ebpf.Program `ebpf:"tcp_rcv_kprobe"`
++	TcpRetransmitSkb        *ebpf.Program `ebpf:"tcp_retransmit_skb"`
+ 	TcxEgressFlowParse      *ebpf.Program `ebpf:"tcx_egress_flow_parse"`
+ 	TcxEgressPcaParse       *ebpf.Program `ebpf:"tcx_egress_pca_parse"`
+ 	TcxIngressFlowParse     *ebpf.Program `ebpf:"tcx_ingress_flow_parse"`
+@@ -579,6 +617,7 @@ func (p *BpfPrograms) Close() error {
+ 		p.TcIngressPcaParse,
+ 		p.TcpRcvFentry,
+ 		p.TcpRcvKprobe,
++		p.TcpRetransmitSkb,
+ 		p.TcxEgressFlowParse,
+ 		p.TcxEgressPcaParse,
+ 		p.TcxIngressFlowParse,
+diff --git a/pkg/ebpf/bpf_x86_bpfel.o b/pkg/ebpf/bpf_x86_bpfel.o
+index fe3e790..9a30ad5 100644
+Binary files a/pkg/ebpf/bpf_x86_bpfel.o and b/pkg/ebpf/bpf_x86_bpfel.o differ
+diff --git a/pkg/model/flow_content.go b/pkg/model/flow_content.go
+index 89cefdc..26560f4 100644
+--- a/pkg/model/flow_content.go
++++ b/pkg/model/flow_content.go
+@@ -10,6 +10,8 @@ type BpfFlowContent struct {
+ 	*ebpf.BpfFlowMetrics
+ 	DNSMetrics           *ebpf.BpfDnsMetrics
+ 	PktDropMetrics       *ebpf.BpfPktDropMetrics
++	TcpRetransMetrics    *ebpf.BpfTcpRetransMetrics
++	SipMetrics           *ebpf.BpfSipMetrics
+ 	NetworkEventsMetrics *ebpf.BpfNetworkEventsMetrics
+ 	XlatMetrics          *ebpf.BpfXlatMetrics
+ 	AdditionalMetrics    *ebpf.BpfAdditionalMetrics
+@@ -116,6 +118,52 @@ func (p *BpfFlowContent) AccumulateDrops(other *ebpf.BpfPktDropMetrics) {
+ 	}
+ }
+ 
++func (p *BpfFlowContent) AccumulateTcpRetrans(other *ebpf.BpfTcpRetransMetrics) {
++	if other == nil {
++		return
++	}
++	p.buildBaseFromAdditional(other.StartMonoTimeTs, other.EndMonoTimeTs, other.EthProtocol)
++	if p.TcpRetransMetrics == nil {
++		p.TcpRetransMetrics = other
++		return
++	}
++	p.TcpRetransMetrics.Bytes += other.Bytes
++	p.TcpRetransMetrics.Packets += other.Packets
++	p.TcpRetransMetrics.LatestFlags |= other.LatestFlags
++	if p.TcpRetransMetrics.StartMonoTimeTs == 0 || (other.StartMonoTimeTs != 0 && other.StartMonoTimeTs < p.TcpRetransMetrics.StartMonoTimeTs) {
++		p.TcpRetransMetrics.StartMonoTimeTs = other.StartMonoTimeTs
++	}
++	if other.EndMonoTimeTs > p.TcpRetransMetrics.EndMonoTimeTs {
++		p.TcpRetransMetrics.EndMonoTimeTs = other.EndMonoTimeTs
++	}
++}
++
++func (p *BpfFlowContent) AccumulateSip(other *ebpf.BpfSipMetrics) {
++	if other == nil {
++		return
++	}
++	p.buildBaseFromAdditional(other.StartMonoTimeTs, other.EndMonoTimeTs, other.EthProtocol)
++	if p.SipMetrics == nil {
++		p.SipMetrics = other
++		return
++	}
++	p.SipMetrics.Messages += other.Messages
++	p.SipMetrics.Requests += other.Requests
++	p.SipMetrics.Responses += other.Responses
++	if other.LatestMethod != 0 {
++		p.SipMetrics.LatestMethod = other.LatestMethod
++	}
++	if other.LatestRespCode != 0 {
++		p.SipMetrics.LatestRespCode = other.LatestRespCode
++	}
++	if p.SipMetrics.StartMonoTimeTs == 0 || (other.StartMonoTimeTs != 0 && other.StartMonoTimeTs < p.SipMetrics.StartMonoTimeTs) {
++		p.SipMetrics.StartMonoTimeTs = other.StartMonoTimeTs
++	}
++	if other.EndMonoTimeTs > p.SipMetrics.EndMonoTimeTs {
++		p.SipMetrics.EndMonoTimeTs = other.EndMonoTimeTs
++	}
++}
++
+ func (p *BpfFlowContent) AccumulateNetworkEvents(other *ebpf.BpfNetworkEventsMetrics) {
+ 	if other == nil {
+ 		return
+diff --git a/pkg/tracer/tracer.go b/pkg/tracer/tracer.go
+index 7a78587..02ee679 100644
+--- a/pkg/tracer/tracer.go
++++ b/pkg/tracer/tracer.go
+@@ -57,6 +57,7 @@ type FlowFetcher struct {
+ 	ingressFilters              map[ifaces.InterfaceKey]*netlink.BpfFilter
+ 	ringbufReader               *ringbuf.Reader
+ 	pktDropsTracePoint          link.Link
++	tcpRetransTracePoint        link.Link
+ 	rttFentryLink               link.Link
+ 	rttKprobeLink               link.Link
+ 	egressTCXLink               map[ifaces.InterfaceKey]link.Link
+@@ -93,7 +94,7 @@ type variablesMapping struct {
+ 
+ // nolint:cyclop
+ func NewFlowFetcher(cfg *FlowFetcherConfig, m *metrics.Metrics) (*FlowFetcher, error) {
+-	var pktDropsLink, networkEventsMonitoringLink, rttFentryLink, rttKprobeLink link.Link
++	var pktDropsLink, tcpRetransLink, networkEventsMonitoringLink, rttFentryLink, rttKprobeLink link.Link
+ 	var nfNatManIPLink, xfrmInputKretProbeLink, xfrmOutputKretProbeLink link.Link
+ 	var xfrmInputKProbeLink, xfrmOutputKProbeLink link.Link
+ 	var sslUprobe link.Link
+@@ -121,6 +122,8 @@ func NewFlowFetcher(cfg *FlowFetcherConfig, m *metrics.Metrics) (*FlowFetcher, e
+ 		sizeMapForFeature(spec, ebpf.BpfMapAggregatedFlowsDns, cfg.EnableDNSTracking, cfg.CacheMaxFlows)
+ 		sizeMapForFeature(spec, ebpf.BpfMapAggregatedFlowsNetworkEvents, cfg.EnableNetworkEventsMonitoring, cfg.CacheMaxFlows)
+ 		sizeMapForFeature(spec, ebpf.BpfMapAggregatedFlowsPktDrop, cfg.EnablePktDrops, cfg.CacheMaxFlows)
++		sizeMapForFeature(spec, ebpf.BpfMapAggregatedFlowsTcpRetrans, cfg.EnableTcpRetrans, cfg.CacheMaxFlows)
++		sizeMapForFeature(spec, ebpf.BpfMapAggregatedFlowsSip, cfg.EnableSIPTracking, cfg.CacheMaxFlows)
+ 		sizeMapForFeature(spec, ebpf.BpfMapAggregatedFlowsXlat, cfg.EnablePktTranslationTracking, cfg.CacheMaxFlows)
+ 		sizeMapForFeature(spec, ebpf.BpfMapAdditionalFlowMetrics, cfg.EnableRTT || cfg.EnableIPsecTracking, cfg.CacheMaxFlows)
+ 
+@@ -143,6 +146,8 @@ func NewFlowFetcher(cfg *FlowFetcherConfig, m *metrics.Metrics) (*FlowFetcher, e
+ 			ebpf.BpfMapAggregatedFlowsDns,
+ 			ebpf.BpfMapAggregatedFlowsNetworkEvents,
+ 			ebpf.BpfMapAggregatedFlowsPktDrop,
++			ebpf.BpfMapAggregatedFlowsTcpRetrans,
++			ebpf.BpfMapAggregatedFlowsSip,
+ 			ebpf.BpfMapAggregatedFlowsXlat,
+ 			ebpf.BpfMapAdditionalFlowMetrics,
+ 			ebpf.BpfMapDirectFlows,
+@@ -192,6 +197,13 @@ func NewFlowFetcher(cfg *FlowFetcherConfig, m *metrics.Metrics) (*FlowFetcher, e
+ 			}
+ 		}
+ 
++		if cfg.EnableTcpRetrans {
++			tcpRetransLink, err = link.Tracepoint("tcp", ebpf.BpfProgTcpRetransmitSkb, objects.TcpRetransmitSkb, nil)
++			if err != nil {
++				return nil, fmt.Errorf("failed to attach the BPF program to tcp_retransmit_skb tracepoint: %w", err)
++			}
++		}
++
+ 		if cfg.EnableNetworkEventsMonitoring {
+ 			if supportNetworkEvents {
+ 				log.Infof("kernel is 5.14.0-570 detected: use kapi network_events_monitoring hook")
+@@ -331,6 +343,18 @@ func NewFlowFetcher(cfg *FlowFetcherConfig, m *metrics.Metrics) (*FlowFetcher, e
+ 			}
+ 		}
+ 
++		if cfg.EnableTcpRetrans {
++			if err := loadPinnedMapInto("aggregated flow tcp retrans", ebpf.BpfMapAggregatedFlowsTcpRetrans, &objects.BpfMaps.AggregatedFlowsTcpRetrans); err != nil {
++				return nil, err
++			}
++		}
++
++		if cfg.EnableSIPTracking {
++			if err := loadPinnedMapInto("aggregated flow sip", ebpf.BpfMapAggregatedFlowsSip, &objects.BpfMaps.AggregatedFlowsSip); err != nil {
++				return nil, err
++			}
++		}
++
+ 		if cfg.EnableNetworkEventsMonitoring {
+ 			if err := loadPinnedMapInto("aggregated flow network events", ebpf.BpfMapAggregatedFlowsNetworkEvents, &objects.BpfMaps.AggregatedFlowsNetworkEvents); err != nil {
+ 				return nil, err
+@@ -412,6 +436,7 @@ func NewFlowFetcher(cfg *FlowFetcherConfig, m *metrics.Metrics) (*FlowFetcher, e
+ 		ingressFilters:              map[ifaces.InterfaceKey]*netlink.BpfFilter{},
+ 		qdiscs:                      qdiscs,
+ 		pktDropsTracePoint:          pktDropsLink,
++		tcpRetransTracePoint:        tcpRetransLink,
+ 		rttFentryLink:               rttFentryLink,
+ 		rttKprobeLink:               rttKprobeLink,
+ 		nfNatManIPLink:              nfNatManIPLink,
+@@ -877,6 +902,11 @@ func (m *FlowFetcher) Close() error {
+ 		}
+ 	}
+ 
++	if m.tcpRetransTracePoint != nil {
++		if err := m.tcpRetransTracePoint.Close(); err != nil {
++			errs = append(errs, err)
++		}
++	}
+ 	if m.pktDropsTracePoint != nil {
+ 		if err := m.pktDropsTracePoint.Close(); err != nil {
+ 			errs = append(errs, err)
+@@ -972,6 +1002,18 @@ func (m *FlowFetcher) Close() error {
+ 		if err := m.objects.AggregatedFlowsDns.Close(); err != nil {
+ 			errs = append(errs, err)
+ 		}
++		if err := m.objects.AggregatedFlowsTcpRetrans.Unpin(); err != nil {
++			errs = append(errs, err)
++		}
++		if err := m.objects.AggregatedFlowsTcpRetrans.Close(); err != nil {
++			errs = append(errs, err)
++		}
++		if err := m.objects.AggregatedFlowsSip.Unpin(); err != nil {
++			errs = append(errs, err)
++		}
++		if err := m.objects.AggregatedFlowsSip.Close(); err != nil {
++			errs = append(errs, err)
++		}
+ 		if err := m.objects.AggregatedFlowsPktDrop.Unpin(); err != nil {
+ 			errs = append(errs, err)
+ 		}
+@@ -1238,6 +1280,24 @@ func (m *FlowFetcher) accumulateSecondaryMaps(flows map[ebpf.BpfFlowId]model.Bpf
+ 		})
+ 		met.FlowBufferSizeGauge.WithBufferName("pktdropsmap").Set(float64(countDrops))
+ 	}
++	if m.config.EnableTcpRetrans {
++		var retrans []ebpf.BpfTcpRetransMetrics
++		countRetrans := lookupAndDeletePerCPUMap(flows, &retrans, m.objects.AggregatedFlowsTcpRetrans, met, func(flow *model.BpfFlowContent) {
++			for i := range retrans {
++				flow.AccumulateTcpRetrans(&retrans[i])
++			}
++		})
++		met.FlowBufferSizeGauge.WithBufferName("tcpretransmap").Set(float64(countRetrans))
++	}
++	if m.config.EnableSIPTracking {
++		var sip []ebpf.BpfSipMetrics
++		countSip := lookupAndDeletePerCPUMap(flows, &sip, m.objects.AggregatedFlowsSip, met, func(flow *model.BpfFlowContent) {
++			for i := range sip {
++				flow.AccumulateSip(&sip[i])
++			}
++		})
++		met.FlowBufferSizeGauge.WithBufferName("sipmap").Set(float64(countSip))
++	}
+ 	if m.config.EnableNetworkEventsMonitoring {
+ 		var netev []ebpf.BpfNetworkEventsMetrics
+ 		countNetEv := lookupAndDeletePerCPUMap(flows, &netev, m.objects.AggregatedFlowsNetworkEvents, met, func(flow *model.BpfFlowContent) {
+@@ -1596,6 +1656,7 @@ func loadObjectsNoNetworkEvents(spec *cilium.CollectionSpec, pinDir string) (ebp
+ 		TCPRcvFentry           *cilium.Program `ebpf:"tcp_rcv_fentry"`
+ 		TCPRcvKprobe           *cilium.Program `ebpf:"tcp_rcv_kprobe"`
+ 		KfreeSkb               *cilium.Program `ebpf:"kfree_skb"`
++		TcpRetransmitSkb       *cilium.Program `ebpf:"tcp_retransmit_skb"`
+ 		TrackNatManipPkt       *cilium.Program `ebpf:"track_nat_manip_pkt"`
+ 		XfrmInputKretprobe     *cilium.Program `ebpf:"xfrm_input_kretprobe"`
+ 		XfrmOutputKretprobe    *cilium.Program `ebpf:"xfrm_output_kretprobe"`
+@@ -1628,6 +1689,7 @@ func loadObjectsNoNetworkEvents(spec *cilium.CollectionSpec, pinDir string) (ebp
+ 			TcpRcvFentry:            newObjects.TCPRcvFentry,
+ 			TcpRcvKprobe:            newObjects.TCPRcvKprobe,
+ 			KfreeSkb:                newObjects.KfreeSkb,
++			TcpRetransmitSkb:        newObjects.TcpRetransmitSkb,
+ 			TrackNatManipPkt:        newObjects.TrackNatManipPkt,
+ 			XfrmInputKretprobe:      newObjects.XfrmInputKretprobe,
+ 			XfrmOutputKretprobe:     newObjects.XfrmOutputKretprobe,
+@@ -1655,6 +1717,7 @@ func loadObjectsWithNetkit(spec *cilium.CollectionSpec, pinDir string) (ebpf.Bpf
+ 		TCPRcvFentry            *cilium.Program `ebpf:"tcp_rcv_fentry"`
+ 		TCPRcvKprobe            *cilium.Program `ebpf:"tcp_rcv_kprobe"`
+ 		KfreeSkb                *cilium.Program `ebpf:"kfree_skb"`
++		TcpRetransmitSkb        *cilium.Program `ebpf:"tcp_retransmit_skb"`
+ 		TrackNatManipPkt        *cilium.Program `ebpf:"track_nat_manip_pkt"`
+ 		XfrmInputKretprobe      *cilium.Program `ebpf:"xfrm_input_kretprobe"`
+ 		XfrmOutputKretprobe     *cilium.Program `ebpf:"xfrm_output_kretprobe"`
+@@ -1688,6 +1751,7 @@ func loadObjectsWithNetkit(spec *cilium.CollectionSpec, pinDir string) (ebpf.Bpf
+ 			TcpRcvFentry:            newObjects.TCPRcvFentry,
+ 			TcpRcvKprobe:            newObjects.TCPRcvKprobe,
+ 			KfreeSkb:                newObjects.KfreeSkb,
++			TcpRetransmitSkb:        newObjects.TcpRetransmitSkb,
+ 			TrackNatManipPkt:        newObjects.TrackNatManipPkt,
+ 			XfrmInputKretprobe:      newObjects.XfrmInputKretprobe,
+ 			XfrmOutputKretprobe:     newObjects.XfrmOutputKretprobe,
+@@ -1815,6 +1879,7 @@ func NewPacketFetcher(cfg *FlowFetcherConfig) (*PacketFetcher, error) {
+ 	}
+ 	var newObjects newBpfObjects
+ 	delete(spec.Programs, ebpf.BpfProgKfreeSkb)
++	delete(spec.Programs, ebpf.BpfProgTcpRetransmitSkb)
+ 	delete(spec.Programs, ebpf.BpfProgNetworkEventsMonitoring)
+ 	delete(spec.Programs, ebpf.BpfProgTcpRcvKprobe)
+ 	delete(spec.Programs, ebpf.BpfProgTcpRcvFentry)
+@@ -1831,6 +1896,7 @@ func NewPacketFetcher(cfg *FlowFetcherConfig) (*PacketFetcher, error) {
+ 	delete(spec.Programs, ebpf.BpfVarHasFilterSampling)
+ 	delete(spec.Programs, ebpf.BpfVarTraceMessages)
+ 	delete(spec.Programs, ebpf.BpfVarEnableDnsTracking)
++	delete(spec.Programs, ebpf.BpfVarEnableSipTracking)
+ 	delete(spec.Programs, ebpf.BpfVarDnsPort)
+ 	delete(spec.Programs, ebpf.BpfVarEnableRtt)
+ 	delete(spec.Programs, ebpf.BpfVarEnableFlowsFiltering)
+@@ -2395,6 +2461,10 @@ func configureFlowSpecVariables(spec *cilium.CollectionSpec, cfg *FlowFetcherCon
+ 	if cfg.EnableRTT {
+ 		enableRtt = 1
+ 	}
++	enableSIPTracking := 0
++	if cfg.EnableSIPTracking {
++		enableSIPTracking = 1
++	}
+ 	enableDNSTracking := 0
+ 	dnsTrackerPort := uint16(dnsDefaultPort)
+ 	if cfg.EnableDNSTracking {
+@@ -2465,6 +2535,7 @@ func configureFlowSpecVariables(spec *cilium.CollectionSpec, cfg *FlowFetcherCon
+ 		{ebpf.BpfVarTraceMessages, uint8(traceMsgs)},
+ 		{ebpf.BpfVarEnableRtt, uint8(enableRtt)},
+ 		{ebpf.BpfVarEnableDnsTracking, uint8(enableDNSTracking)},
++		{ebpf.BpfVarEnableSipTracking, uint8(enableSIPTracking)},
+ 		{ebpf.BpfVarDnsPort, dnsTrackerPort},
+ 		{ebpf.BpfVarEnableFlowsFiltering, uint8(enableFlowFiltering)},
+ 		{ebpf.BpfVarEnableNetworkEventsMonitoring, uint8(enableNetworkEventsMonitoring)},

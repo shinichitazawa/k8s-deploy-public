@@ -1,7 +1,12 @@
-# ClusterSecretStore: aws-secrets-manager
-# IRSA 経由 (EKS Hybrid Nodes 上で動作する想定)
-# Pi の k3s 単独運用時は、static credentials の Secret を作って参照する形に切り替え
-apiVersion: external-secrets.io/v1beta1
+# ClusterSecretStore: AWS Secrets Manager(ap-northeast-1 / example-env)。
+#
+# **auth ブロックを書かない。** ESO は auth 未指定だとコントローラ自身の AWS 資格情報
+# (= SA annotation で pod-identity-webhook が注入した web identity)を使う。
+# このリポジトリの keyless 方針そのままで、静的キーも SecretStore 用の Secret も要らない。
+#
+# API は external-secrets.io/v1。chart 2.x では v1 が保存バージョンで、
+# v1beta1 は crds.unsafeServeV1Beta1 を立てない限り提供されない。
+apiVersion: external-secrets.io/v1
 kind: ClusterSecretStore
 metadata:
   name: aws-secrets-manager
@@ -10,8 +15,3 @@ spec:
     aws:
       service: SecretsManager
       region: ap-northeast-1
-      auth:
-        jwt:
-          serviceAccountRef:
-            name: external-secrets
-            namespace: external-secrets

@@ -8,19 +8,56 @@ data:
   # FLP で Prometheus は write ではなく encode ステージ(encode/prom)である点に注意。
   # メトリクスサーバは既定の :9090 で立つ(実測。encode 内の port 指定は効かなかった)。
   # metrics は SrcAddr/DstAddr ラベルの flow カウンタ(小規模クラスタ前提。大規模では cardinality に注意)
+  #
+  # enrich: transform/network の add_kubernetes で SrcK8S_*/DstK8S_*(Pod 名・ns など)を付与。
+  # in-cluster SA を使うため agent の SA に pods/services/nodes 等の read RBAC が必要
+  # (rbac-enrich.yaml)。pod_flows_total は Pod 名ラベル付き(検証用。名前 churn に注意)。
+  #
+  # lake: write/grpc で flow-ingest(flow-ingest ns)へ全フローを送る。受け側が Iceberg に書く。
+  # 送り先を Service 名で書くため、agent(hostNetwork)の dnsPolicy を ClusterFirstWithHostNet にしてある。
   flp-config.json: |
     {
       "pipeline": [
-        {"name": "writer", "follows": "preset-ingester"},
-        {"name": "prom", "follows": "preset-ingester"}
+        {"name": "enrich", "follows": "preset-ingester"},
+        {"name": "writer", "follows": "enrich"},
+        {"name": "prom", "follows": "enrich"},
+        {"name": "lake", "follows": "enrich"}
       ],
       "parameters": [
+        {"name": "enrich", "transform": {"type": "network", "network": {
+          "rules": [
+            {"type": "add_kubernetes", "kubernetes": {"ipField": "SrcAddr", "output": "SrcK8S"}},
+            {"type": "add_kubernetes", "kubernetes": {"ipField": "DstAddr", "output": "DstK8S"}}
+          ]
+        }}},
         {"name": "writer", "write": {"type": "stdout"}},
+        {"name": "lake", "write": {"type": "grpc", "grpc": {"targetHost": "flow-ingest.flow-ingest.svc.cluster.local", "targetPort": 9999}}},
         {"name": "prom", "encode": {"type": "prom", "prom": {
           "prefix": "netobserv_",
           "metrics": [
             {"name": "node_flows_total", "type": "counter", "valueKey": "",
-             "labels": ["SrcAddr", "DstAddr"], "filters": []}
+             "labels": ["SrcAddr", "DstAddr"], "filters": []},
+            {"name": "pod_flows_total", "type": "counter", "valueKey": "",
+             "labels": ["SrcK8S_Namespace", "SrcK8S_Name", "DstK8S_Namespace", "DstK8S_Name"], "filters": []},
+            {"name": "pod_flow_bytes_total", "type": "counter", "valueKey": "Bytes",
+             "labels": ["SrcK8S_Namespace", "SrcK8S_Name", "SrcK8S_OwnerName", "DstK8S_Namespace", "DstK8S_Name", "DstK8S_OwnerName"], "filters": []},
+            {"name": "flow_rtt_seconds", "type": "histogram", "valueKey": "TimeFlowRttNs",
+             "labels": ["SrcK8S_OwnerName", "DstK8S_OwnerName"],
+             "filters": [{"key": "TimeFlowRttNs", "type": "presence"}],
+             "valueScale": 1000000000},
+            {"name": "dns_latency_seconds", "type": "histogram", "valueKey": "DnsLatencyMs",
+             "labels": ["SrcK8S_OwnerName", "DstK8S_OwnerName"],
+             "filters": [{"key": "DnsId", "type": "presence"}],
+             "valueScale": 1000},
+            {"name": "drop_bytes_total", "type": "counter", "valueKey": "PktDropBytes",
+             "labels": ["SrcK8S_OwnerName", "DstK8S_OwnerName", "PktDropLatestDropCause"],
+             "filters": [{"key": "PktDropBytes", "type": "presence"}]},
+            {"name": "tcp_retrans_packets_total", "type": "counter", "valueKey": "TcpRetransPackets",
+             "labels": ["SrcK8S_OwnerName", "DstK8S_OwnerName"],
+             "filters": [{"key": "TcpRetransPackets", "type": "presence"}]},
+            {"name": "sip_messages_total", "type": "counter", "valueKey": "SipMessages",
+             "labels": ["SrcK8S_OwnerName", "DstK8S_OwnerName", "SipLatestMethod", "SipLatestRespCode"],
+             "filters": [{"key": "SipMessages", "type": "presence"}]}
           ]
         }}}
       ]

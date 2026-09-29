@@ -4,4 +4,6 @@ kind: Kustomization
 # 対象: rpi0-hybrid クラスタ(cluster=rasp overlay を流用。platform-hybrid.yaml)。
 resources:
   - ../../base
+  # queue モードの worker(別 identity app=n8n-worker。base とは分離)。
+  - ../../worker
   - ingress.yaml

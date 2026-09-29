@@ -1,0 +1,22 @@
+# ec2/k3s-hybrid-node モジュールを Burrito が plan/apply。
+# AWS 認証(aws-creds) と TF 変数(tf-vars: TF_VAR_k3s_token / TF_VAR_tailscale_authkey / TF_VAR_profile="")
+# を runner に envFrom で注入する。
+apiVersion: config.terraform.padok.cloud/v1alpha1
+kind: TerraformLayer
+metadata:
+  name: ec2-k3s-hybrid-node
+  namespace: burrito-project
+spec:
+  branch: feature/llm-ab-test-tpu
+  path: ec2/k3s-hybrid-node
+  remediationStrategy:
+    autoApply: true
+  repository:
+    name: k8s-deploy
+    namespace: burrito-project
+  overrideRunnerSpec:
+    envFrom:
+      - secretRef:
+          name: aws-creds
+      - secretRef:
+          name: tf-vars

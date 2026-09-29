@@ -107,7 +107,7 @@ kubectl --context rpi0-hybrid apply -k cluster-autoscaler/overlays/rasp   # 単�
 **Azure(Phase2) — live 検証完了(2026-07)**
 - [x] user-data(startup-script)に providerID(`azure:///…/virtualMachines/<instanceId>`)を IMDS から組立。
       cloud=azure label 既存。VMSS は Spot・capacity 0。
-- [x] **keyless(Workload Identity)認証**: app `22222222` に federated credential
+- [x] **keyless(Workload Identity)認証**: app `4c348c8c` に federated credential
       (subject=`system:serviceaccount:cluster-ops:cluster-autoscaler-azure`, aud=`api://AzureADTokenExchange`,
       issuer=自前 S3 OIDC)を追加。app SP に **VMSS スコープの Contributor** を付与。
 - [x] **webhook 無しの手動 wiring**: azure-workload-identity webhook 未導入のため、projected token

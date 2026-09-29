@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: flow-ingest
+  labels:
+    app.kubernetes.io/name: flow-ingest
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: flow-ingest
+  ports:
+    - {name: grpc, port: 9999, targetPort: grpc}
+    - {name: http, port: 8080, targetPort: http}

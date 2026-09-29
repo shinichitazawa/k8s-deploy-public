@@ -1,0 +1,98 @@
+# Trino(レイクハウスのクエリエンジン)。単一ノード構成。
+#
+# chart は trino 1.42.2(2026-05-01、取得時点の最新)。chart の既定 appVersion は 480 だが、
+# 本体は **483(2026-07-18、取得時点の最新)をダイジェスト固定**で上書きしている。
+
+image:
+  repository: trinodb/trino
+  tag: "483"
+  digest: sha256:db58cc93e593a2706553745f276bb119c9810e69918be56ecde088ba7ccb0534
+
+# **worker を立てず、coordinator にクエリも実行させる。**
+# 対象データは小さく(NetObserv のフロー履歴)、常設の lab-worker-14 の空き(実測 7.1 GiB)に
+# 収めるため。Dremio は最小 8 CPU / 16 GB で専用ノードが要ったが、Trino には明示の下限が無い。
+server:
+  workers: 0
+  config:
+    query:
+      maxMemory: "2GB"
+
+coordinator:
+  jvm:
+    maxHeapSize: "3G"
+  config:
+    nodeScheduler:
+      includeCoordinator: true
+    query:
+      # heap 3G から既定の headroom(30%)を引いた範囲に収める。
+      maxMemoryPerNode: "1GB"
+
+  # **requests だけでなく limits も必ず付ける。** このクラスタの k3s は既定で
+  # システム予約が無く、上限の無いワークロードがノードを食い潰して kubelet が
+  # 飢える事故を Dremio で踏んだ(ec2/k3s-cilium-lakehouse-node/README.md)。
+  resources:
+    requests: {cpu: 500m, memory: 4Gi}
+    limits: {cpu: "3", memory: 5Gi}
+
+  # 常設ノードに固定する。rpi0 は control plane で余力が小さい(skill hybrid-capacity)。
+  nodeSelector:
+    kubernetes.io/hostname: lab-worker-14
+
+# カタログ。
+#
+# lakehouse: Lakekeeper(Iceberg REST カタログ)に繋ぐ。
+#   **Trino 側に AWS の資格情報を一切置かない。** vended-credentials-enabled=true にすると、
+#   Lakekeeper が warehouse 用ロールを AssumeRole して作った一時クレデンシャルを
+#   テーブルごとに受け取って S3 を読む。Dremio OSS ではこれができず静的キーが要った。
+#     https://trino.io/docs/current/object-storage/metastores.html
+#   S3 ファイルシステムのプロパティ名は fs.s3.enabled(旧名 fs.native-s3.enabled ではない)。
+#     https://trino.io/docs/current/object-storage/file-system-s3.html
+#   Lakekeeper は認証無効なので security=NONE。Lakekeeper に OIDC を入れたら OAUTH2 に変える。
+catalogs:
+  lakehouse: |
+    connector.name=iceberg
+    iceberg.catalog.type=rest
+    iceberg.rest-catalog.uri=http://lakekeeper.lakekeeper.svc.cluster.local:8181/catalog
+    iceberg.rest-catalog.warehouse=lakehouse
+    iceberg.rest-catalog.security=NONE
+    iceberg.rest-catalog.vended-credentials-enabled=true
+    fs.s3.enabled=true
+    s3.region=ap-northeast-1
+  # 外部依存なしで動作確認できるよう tpch は残す。tpcds は使わないので外す。
+  tpch: |
+    connector.name=tpch
+    tpch.splits-per-node=4
+  tpcds: null
+
+service:
+  type: ClusterIP
+
+# Grafana から誰でもクエリを投げられるため、書き込みを止める。
+#
+# Grafana は tailnet に公開されており、匿名アクセスが Viewer 権限で有効になっている
+# (monitoring/base/grafana.yaml)。Grafana の Viewer はデータソースに任意の SQL を
+# 投げられるので、対策が無いと tailnet の誰でも DROP TABLE まで到達できる。
+# Trino 自身は ClusterIP のみで tailnet に出ていないため、外から届く経路は
+# Grafana のデータソース proxy だけ。その経路は必ず user=grafana で来る。
+#
+# **注意**: Trino は認証を持たないのでユーザ名は自己申告。クラスタ内の pod は
+# 別の名前を名乗ればこの制限を回避できる。これは「tailnet から Grafana 経由で
+# 誤って書き換える」経路を閉じるためのもので、クラスタ内の悪意には効かない。
+accessControl:
+  type: configmap
+  refreshPeriod: 60s
+  configFile: rules.json
+  rules:
+    rules.json: |-
+      {
+        "catalogs": [
+          {
+            "user": "grafana",
+            "catalog": ".*",
+            "allow": "read-only"
+          },
+          {
+            "allow": "all"
+          }
+        ]
+      }

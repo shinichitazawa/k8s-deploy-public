@@ -10,6 +10,10 @@ resources:
   # 暗号鍵は Sealed Secrets(sealedsecret.yaml)。kubeseal で封緘済み(2026-08 rpi0-hybrid)。
   # controller が復号して Secret `n8n-encryption-key` を生成 → deployment が参照。
   - sealedsecret.yaml
+  # egress を DNS/共有DB/whisper/world:443/prometheus に限定する CNP。
+  # これまで手動 kubectl apply でライブに存在(ArgoCD 管理外)だったものを収斂し
+  # git 管理下へ。default-deny egress のため、依存先を足す時はここに追記する。
+  - ciliumnetworkpolicy.yaml
 
 labels:
   - pairs:

@@ -1,0 +1,146 @@
+# eBPF flow(NetObserv) と cAdvisor / node-exporter / metrics-server の
+# 「見える範囲」を同じ画面で比較するダッシュボード。
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-netobserv
+  namespace: monitoring
+data:
+  netobserv-compare.json: |
+    {
+      "uid": "netobserv-compare",
+      "title": "NetObserv eBPF flow vs 既存メトリクス",
+      "timezone": "browser",
+      "schemaVersion": 39,
+      "refresh": "30s",
+      "time": {"from": "now-30m", "to": "now"},
+      "panels": [
+        {
+          "id": 1, "type": "table",
+          "title": "eBPF flow: Pod ➜ Pod(送信元と宛先の対応が分かるのは NetObserv だけ)",
+          "gridPos": {"h": 10, "w": 24, "x": 0, "y": 0},
+          "datasource": {"type": "prometheus", "uid": "prom"},
+          "targets": [{
+            "refId": "A", "instant": true, "format": "table",
+            "expr": "topk(12, sum by (SrcK8S_Namespace, SrcK8S_Name, DstK8S_Namespace, DstK8S_Name) (rate(netobserv_pod_flow_bytes_total[5m])) > 0)"
+          }],
+          "transformations": [
+            {"id": "organize", "options": {
+              "excludeByName": {"Time": true},
+              "indexByName": {
+                "SrcK8S_Namespace": 0, "SrcK8S_Name": 1,
+                "DstK8S_Namespace": 2, "DstK8S_Name": 3, "Value #A": 4
+              },
+              "renameByName": {
+                "SrcK8S_Namespace": "Src NS", "SrcK8S_Name": "Src Pod/Node",
+                "DstK8S_Namespace": "Dst NS", "DstK8S_Name": "Dst Pod/Node",
+                "Value #A": "bytes/s"
+              }
+            }}
+          ],
+          "fieldConfig": {"defaults": {"unit": "Bps", "decimals": 1}, "overrides": []}
+        },
+        {
+          "id": 2, "type": "timeseries",
+          "title": "eBPF flow: Pod ペア別レート(相手ごとに系列が分かれる)",
+          "gridPos": {"h": 9, "w": 12, "x": 0, "y": 10},
+          "datasource": {"type": "prometheus", "uid": "prom"},
+          "targets": [{
+            "refId": "A",
+            "expr": "topk(8, sum by (SrcK8S_Name, DstK8S_Name) (rate(netobserv_pod_flow_bytes_total[2m])))",
+            "legendFormat": "{{SrcK8S_Name}} ➜ {{DstK8S_Name}}"
+          }],
+          "fieldConfig": {"defaults": {"unit": "Bps"}, "overrides": []}
+        },
+        {
+          "id": 3, "type": "timeseries",
+          "title": "cAdvisor: Pod 単位の受信合計(相手は分からない)",
+          "gridPos": {"h": 9, "w": 12, "x": 12, "y": 10},
+          "datasource": {"type": "prometheus", "uid": "prom"},
+          "targets": [{
+            "refId": "A",
+            "expr": "topk(8, sum by (namespace, pod) (rate(container_network_receive_bytes_total{pod!=\"\"}[2m])))",
+            "legendFormat": "{{namespace}}/{{pod}}(相手不明)"
+          }],
+          "fieldConfig": {"defaults": {"unit": "Bps"}, "overrides": []}
+        },
+        {
+          "id": 4, "type": "timeseries",
+          "title": "node-exporter: NIC 合計(Pod も相手も分からない)",
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 19},
+          "datasource": {"type": "prometheus", "uid": "prom"},
+          "targets": [{
+            "refId": "A",
+            "expr": "sum by (instance, device) (rate(node_network_receive_bytes_total{device=~\"eth.*|end.*|enp.*\"}[2m]))",
+            "legendFormat": "{{instance}} {{device}}(ノード合計)"
+          }],
+          "fieldConfig": {"defaults": {"unit": "Bps"}, "overrides": []}
+        },
+        {
+          "id": 6, "type": "timeseries",
+          "title": "eBPF 追加フック: TCP RTT p95(ワークロードペア別)",
+          "gridPos": {"h": 9, "w": 12, "x": 0, "y": 27},
+          "datasource": {"type": "prometheus", "uid": "prom"},
+          "targets": [{
+            "refId": "A",
+            "expr": "topk(8, histogram_quantile(0.95, sum by (le, SrcK8S_OwnerName, DstK8S_OwnerName) (rate(netobserv_flow_rtt_seconds_bucket[5m]))))",
+            "legendFormat": "{{SrcK8S_OwnerName}} ➜ {{DstK8S_OwnerName}}"
+          }],
+          "fieldConfig": {"defaults": {"unit": "s"}, "overrides": []}
+        },
+        {
+          "id": 7, "type": "timeseries",
+          "title": "eBPF 追加フック: DNS レイテンシ p95 / 応答コード",
+          "gridPos": {"h": 9, "w": 12, "x": 12, "y": 27},
+          "datasource": {"type": "prometheus", "uid": "prom"},
+          "targets": [{
+            "refId": "A",
+            "expr": "histogram_quantile(0.95, sum by (le) (rate(netobserv_dns_latency_seconds_bucket[5m])))",
+            "legendFormat": "DNS p95"
+          }],
+          "fieldConfig": {"defaults": {"unit": "s"}, "overrides": []}
+        },
+        {
+          "id": 8, "type": "timeseries",
+          "title": "eBPF 追加フック: パケットドロップ(カーネルの理由別)",
+          "gridPos": {"h": 9, "w": 12, "x": 0, "y": 36},
+          "datasource": {"type": "prometheus", "uid": "prom"},
+          "targets": [{
+            "refId": "A",
+            "expr": "topk(8, sum by (PktDropLatestDropCause) (rate(netobserv_drop_bytes_total[5m])))",
+            "legendFormat": "{{PktDropLatestDropCause}}"
+          }],
+          "fieldConfig": {"defaults": {"unit": "Bps"}, "overrides": []}
+        },
+        {
+          "id": 9, "type": "timeseries",
+          "title": "独自フック: TCP 再送(ワークロードペア別)",
+          "gridPos": {"h": 9, "w": 12, "x": 12, "y": 36},
+          "datasource": {"type": "prometheus", "uid": "prom"},
+          "targets": [{
+            "refId": "A",
+            "expr": "topk(8, sum by (SrcK8S_OwnerName, DstK8S_OwnerName) (rate(netobserv_tcp_retrans_packets_total[5m])))",
+            "legendFormat": "{{SrcK8S_OwnerName}} ➜ {{DstK8S_OwnerName}}"
+          }],
+          "fieldConfig": {"defaults": {"unit": "pps"}, "overrides": []}
+        },
+        {
+          "id": 10, "type": "timeseries",
+          "title": "独自フック: SIP メッセージ(メソッド/応答コード別)",
+          "gridPos": {"h": 9, "w": 12, "x": 0, "y": 45},
+          "datasource": {"type": "prometheus", "uid": "prom"},
+          "targets": [{
+            "refId": "A",
+            "expr": "sum by (SipLatestMethod, SipLatestRespCode) (rate(netobserv_sip_messages_total[5m]))",
+            "legendFormat": "{{SipLatestMethod}} / {{SipLatestRespCode}}"
+          }],
+          "fieldConfig": {"defaults": {"unit": "mps"}, "overrides": []}
+        },
+        {
+          "id": 5, "type": "text",
+          "title": "観測レイヤ比較",
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 19},
+          "options": {"mode": "markdown", "content": "| ソース | 分かること | 分からないこと |\n|---|---|---|\n| **NetObserv (eBPF)** | Pod➜Pod の通信相手・向き・バイト/パケット(L3/L4 flow) | アプリ層の内容 |\n| cAdvisor | Pod 単位の送受信合計 | **通信相手** |\n| node-exporter | ノード NIC 合計 | **Pod も相手も** |\n| metrics-server | CPU/メモリ(kubectl top) | **ネットワークは一切対象外** |\n\nこの画面の上 2 段は同じ通信を見ている。送信元と宛先の対応を持つのは eBPF flow だけ。"}
+        }
+      ]
+    }

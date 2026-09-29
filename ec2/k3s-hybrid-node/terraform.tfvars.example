@@ -1,0 +1,16 @@
+# cp して terraform.tfvars を作る（secrets を含むためコミットしない → .gitignore 済み）
+# Terrakube から実行する場合は、下記 sensitive 変数を Terrakube の Variables(sensitive) で渡す。
+
+region         = "ap-northeast-1"
+profile        = "example-env"
+node_name      = "ec2-t4g"
+k3s_cp_host    = "192.0.2.8"
+k3s_version    = "v1.31.4+k3s1"
+# ASG Mixed Instances(Spot, price-capacity-optimized, 全AZ分散)
+instance_types = ["t4g.small", "t4g.medium", "m6g.medium", "c6g.medium"]
+desired_capacity = 1
+# on_demand_percentage = 0  # 0=全Spot / 100=全on-demand（容量が全滅した時の緊急フォールバック）
+
+# --- secrets（例。実値は tfvars/Terrakube variable で。リポジトリに置かない）---
+# k3s_token         = "K10<ca-hash>::server:<secret>"
+# tailscale_authkey = "tskey-auth-xxxxxxxx"

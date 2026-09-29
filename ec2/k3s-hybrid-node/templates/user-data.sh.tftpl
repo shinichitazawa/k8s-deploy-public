@@ -1,0 +1,30 @@
+#!/bin/bash
+set -uxo pipefail
+
+# 0. instance 毎に一意な hostname（ASG 置換で node-password 衝突を避けるため node 名を一意化）
+IID=$(curl -s -H "X-aws-ec2-metadata-token: $(curl -s -X PUT http://169.254.169.254/latest/api/token -H 'X-aws-ec2-metadata-token-ttl-seconds: 60')" http://169.254.169.254/latest/meta-data/instance-id)
+NODE="${node_name}-$IID"
+
+# 1. Tailscale 導入 → tailnet 参加（subnet route 192.0.2.0/24 を受領、SSH 有効）
+curl -fsSL https://tailscale.com/install.sh | sh
+tailscale up --accept-routes --accept-dns=false --ssh \
+  --hostname="$NODE" --authkey=${tailscale_authkey}
+# tailscale IP を取得（flannel VXLAN の外側IPに使う＝全ノード mesh の双方向到達）
+for i in $(seq 1 20); do TSIP=$(tailscale ip -4 2>/dev/null | head -1); [ -n "$TSIP" ] && break; sleep 2; done
+
+# 2. tailnet subnet route 経由で k3s control-plane に到達できるまで待つ
+for i in $(seq 1 40); do
+  (echo > /dev/tcp/${k3s_cp_host}/${k3s_cp_port}) >/dev/null 2>&1 && break
+  sleep 3
+done
+
+# 3. k3s agent を join（バージョン固定 / node 名は一意 hostname / role ラベル / taint で専有）
+#    --node-name を固定しないことで ASG 置換時の node-password 衝突を回避。
+#    ノード選択は label(role=ec2-spot) + taint(dedicated=aws-ops) の toleration で行う。
+TAINT_ARG=""
+[ -n "${node_taint}" ] && TAINT_ARG="--node-taint ${node_taint}"
+curl -sfL https://get.k3s.io | \
+  INSTALL_K3S_VERSION=${k3s_version} \
+  K3S_URL=${k3s_url} \
+  K3S_TOKEN='${k3s_token}' \
+  INSTALL_K3S_EXEC="agent --node-name=$NODE --node-label=role=ec2-spot --node-external-ip=$TSIP $TAINT_ARG" sh -

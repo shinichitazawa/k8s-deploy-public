@@ -21,7 +21,7 @@ cloudProvider: gce
 #     (extraArgs の node-group-auto-discovery だけでは Deployment が出ない)。よって
 #     autoscalingGroups で明示。URL の zone は gce.conf の local-zone / Terraform var.zone と一致必須。
 autoscalingGroups:
-  - name: https://www.googleapis.com/compute/v1/projects/st-datalakehouse/zones/asia-northeast1-a/instanceGroups/gcp-cil-mig
+  - name: https://www.googleapis.com/compute/v1/projects/example-project/zones/asia-northeast1-a/instanceGroups/gcp-cil-mig
     minSize: 0
     maxSize: 2
 
@@ -38,7 +38,7 @@ extraVolumes:
       sources:
         - serviceAccountToken:
             path: token
-            audience: "https://iam.googleapis.com/projects/480825460332/locations/global/workloadIdentityPools/rpi0-pool/providers/rpi0-provider"
+            audience: "https://iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/rpi0-pool/providers/rpi0-provider"
             expirationSeconds: 3600
   - name: gcp-cred-config
     configMap:

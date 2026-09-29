@@ -1,0 +1,29 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: wrenai
+
+resources:
+  - namespace.yaml
+  - deployment.yaml
+  - service.yaml
+  - ciliumnetworkpolicy.yaml
+
+# 内容が変わると名前のハッシュが変わり、Deployment が自動で作り直される。
+configMapGenerator:
+  - name: wren-mcp-config
+    files:
+      - launch.py
+      - prepare.sh
+      - profiles.yml
+      - requirements.lock
+  # MDL プロジェクト。ConfigMap のキーに "/" は使えないので "__" 区切りにし、
+  # prepare.sh がディレクトリ構造に戻す。モデルを足したらここにも 1 行足す。
+  - name: wren-mcp-project
+    files:
+      - wren_project.yml=project/wren_project.yml
+      - relationships.yml=project/relationships.yml
+      - models__flows__metadata.yml=project/models/flows/metadata.yml
+      - cubes__traffic__metadata.yml=project/cubes/traffic/metadata.yml
+      - knowledge__knowledge.yml=project/knowledge/knowledge.yml
+      - knowledge__rules__general.md=project/knowledge/rules/general.md

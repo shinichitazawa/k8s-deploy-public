@@ -57,6 +57,8 @@ kind: ScaledObject
 metadata:
   name: xcloud-nginx-cron
   namespace: default
+  annotations:
+    autoscaling.keda.sh/paused-replicas: "0"  # 既定は停止。検証時にこの annotation を外す
 spec:
   scaleTargetRef: {name: xcloud-nginx}
   minReplicaCount: 0
@@ -69,3 +71,182 @@ spec:
         start: "50 11 * * *"
         end: "30 14 * * *"
         desiredReplicas: "1"
+---
+# AWS 版(同型)。KEDA cron の start/end は検証日時に合わせて調整する。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: xcloud-nginx-aws
+  namespace: default
+  labels: {app: xcloud-nginx-aws}
+spec:
+  replicas: 0
+  selector: {matchLabels: {app: xcloud-nginx-aws}}
+  template:
+    metadata: {labels: {app: xcloud-nginx-aws}}
+    spec:
+      nodeSelector: {cloud: aws}
+      tolerations: [{key: dedicated, operator: Equal, value: aws-ops, effect: NoSchedule}]
+      containers:
+        - name: nginx
+          image: nginx:1.27-alpine
+          ports: [{containerPort: 80}]
+          resources: {requests: {cpu: 50m, memory: 32Mi}}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: xcloud-nginx-aws, namespace: default}
+spec:
+  selector: {app: xcloud-nginx-aws}
+  ports: [{port: 80}]
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: xcloud-nginx-aws-cron
+  namespace: default
+  annotations:
+    autoscaling.keda.sh/paused-replicas: "0"  # 既定は停止。検証時にこの annotation を外す
+spec:
+  scaleTargetRef: {name: xcloud-nginx-aws}
+  minReplicaCount: 0
+  maxReplicaCount: 1
+  cooldownPeriod: 120
+  triggers:
+    - type: cron
+      metadata: {timezone: Asia/Tokyo, start: "35 13 * * *", end: "20 15 * * *", desiredReplicas: "1"}
+---
+# GCP 版(同型)。upstream の GCE provider は混在 providerID で scale-up 不能だが、
+# フォーク修正版 CA(ca-gce-mixedfix/ 参照)なら AWS/Azure と同様に CA で供給できる。
+# 修正版を使わない場合は gcp-mig-cron.yaml の CronJob resize と組で使う。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: xcloud-nginx-gcp
+  namespace: default
+  labels: {app: xcloud-nginx-gcp}
+spec:
+  replicas: 0
+  selector: {matchLabels: {app: xcloud-nginx-gcp}}
+  template:
+    metadata: {labels: {app: xcloud-nginx-gcp}}
+    spec:
+      nodeSelector: {cloud: gcp}
+      tolerations: [{key: dedicated, operator: Equal, value: gcp-ops, effect: NoSchedule}]
+      containers:
+        - name: nginx
+          image: nginx:1.27-alpine
+          ports: [{containerPort: 80}]
+          resources: {requests: {cpu: 50m, memory: 32Mi}}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: xcloud-nginx-gcp, namespace: default}
+spec:
+  selector: {app: xcloud-nginx-gcp}
+  ports: [{port: 80}]
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: xcloud-nginx-gcp-cron
+  namespace: default
+  annotations:
+    autoscaling.keda.sh/paused-replicas: "0"  # 既定は停止。検証時にこの annotation を外す
+spec:
+  scaleTargetRef: {name: xcloud-nginx-gcp}
+  minReplicaCount: 0
+  maxReplicaCount: 1
+  cooldownPeriod: 120
+  triggers:
+    - type: cron
+      metadata: {timezone: Asia/Tokyo, start: "50 13 * * *", end: "20 15 * * *", desiredReplicas: "1"}
+---
+# OCI 版(同型)。ノード供給は oci-pool-cron.yaml の CronJob resize と組で使う。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: xcloud-nginx-oci
+  namespace: default
+  labels: {app: xcloud-nginx-oci}
+spec:
+  replicas: 0
+  selector: {matchLabels: {app: xcloud-nginx-oci}}
+  template:
+    metadata: {labels: {app: xcloud-nginx-oci}}
+    spec:
+      nodeSelector: {cloud: oci}
+      tolerations: [{key: dedicated, operator: Equal, value: oci-ops, effect: NoSchedule}]
+      containers:
+        - name: nginx
+          image: nginx:1.27-alpine
+          ports: [{containerPort: 80}]
+          resources: {requests: {cpu: 50m, memory: 32Mi}}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: xcloud-nginx-oci, namespace: default}
+spec:
+  selector: {app: xcloud-nginx-oci}
+  ports: [{port: 80}]
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: xcloud-nginx-oci-cron
+  namespace: default
+  annotations:
+    autoscaling.keda.sh/paused-replicas: "0"  # 既定は停止。検証時にこの annotation を外す
+spec:
+  scaleTargetRef: {name: xcloud-nginx-oci}
+  minReplicaCount: 0
+  maxReplicaCount: 1
+  cooldownPeriod: 120
+  triggers:
+    - type: cron
+      metadata: {timezone: Asia/Tokyo, start: "30 16 * * *", end: "30 17 * * *", desiredReplicas: "1"}
+---
+# さくら版(同型)。ノード供給はフォーク実装の CA sakuracloud provider
+# (ca-sakuracloud-provider/ 参照)。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: xcloud-nginx-sakura
+  namespace: default
+  labels: {app: xcloud-nginx-sakura}
+spec:
+  replicas: 0
+  selector: {matchLabels: {app: xcloud-nginx-sakura}}
+  template:
+    metadata: {labels: {app: xcloud-nginx-sakura}}
+    spec:
+      nodeSelector: {cloud: sakura}
+      tolerations: [{key: dedicated, operator: Equal, value: sakura-ops, effect: NoSchedule}]
+      containers:
+        - name: nginx
+          image: nginx:1.27-alpine
+          ports: [{containerPort: 80}]
+          resources: {requests: {cpu: 50m, memory: 32Mi}}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: xcloud-nginx-sakura, namespace: default}
+spec:
+  selector: {app: xcloud-nginx-sakura}
+  ports: [{port: 80}]
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: xcloud-nginx-sakura-cron
+  namespace: default
+  annotations:
+    autoscaling.keda.sh/paused-replicas: "0"  # 既定は停止。検証時にこの annotation を外す
+spec:
+  scaleTargetRef: {name: xcloud-nginx-sakura}
+  minReplicaCount: 0
+  maxReplicaCount: 1
+  cooldownPeriod: 120
+  triggers:
+    - type: cron
+      metadata: {timezone: Asia/Tokyo, start: "0 23 * * *", end: "45 23 * * *", desiredReplicas: "1"}
