@@ -1,0 +1,10 @@
+# SQLMesh の namespace。
+#
+# CronJob(sqlmesh app、wave 58)より先に必要。共有 PostgreSQL のユーザ `sqlmesh.sqlmesh` は
+# enable_cross_namespace_secret により **ns sqlmesh に Secret を作る**ため、
+# infra(wave 30)が同期する時点でこの ns が無いと postgres-operator の sync が失敗する。
+# lakekeeper の ns をここに置いているのと同じ理由。
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: sqlmesh

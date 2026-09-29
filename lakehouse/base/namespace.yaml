@@ -1,0 +1,11 @@
+# Lakekeeper の namespace。
+#
+# 本体(helm)より先に必要。共有 PostgreSQL のユーザ `lakekeeper.lakekeeper` は
+# enable_cross_namespace_secret により **ns lakekeeper に Secret を作る**ため、
+# infra(wave 30)が同期する時点でこの ns が存在していないと
+# `namespaces "lakekeeper" not found` で postgres-operator の sync が失敗する。
+# そのため lakehouse app は infra より前(wave 25)に置く。
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: lakekeeper
