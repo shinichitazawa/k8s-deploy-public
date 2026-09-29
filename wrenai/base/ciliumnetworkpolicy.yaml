@@ -1,0 +1,45 @@
+# MCP サーバは認証を持たず、run_sql でレイクハウスを読める。届く相手を絞る。
+# ingress: kubelet の probe(host)と、この app の Tailscale Ingress proxy だけ。
+#   クラスタ内の他の pod から使うときは、ここに fromEndpoints を足す
+#   (相手側に egress の CNP があれば、そちらにも許可が要る)。
+# egress: DNS / Trino / PyPI(initContainer の pip install)。
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: wren-mcp
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: wren-mcp
+  ingress:
+    - fromEntities:
+        - host
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: tailscale
+            tailscale.com/parent-resource: wren-mcp
+            tailscale.com/parent-resource-ns: wrenai
+      toPorts:
+        - ports:
+            - {port: "8080", protocol: TCP}
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            k8s-app: kube-dns
+            k8s:io.kubernetes.pod.namespace: kube-system
+      toPorts:
+        - ports:
+            - {port: "53", protocol: UDP}
+            - {port: "53", protocol: TCP}
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: trino
+            app.kubernetes.io/name: trino
+      toPorts:
+        - ports:
+            - {port: "8080", protocol: TCP}
+    - toEntities:
+        - world
+      toPorts:
+        - ports:
+            - {port: "443", protocol: TCP}

@@ -1,0 +1,39 @@
+# 受け口は netobserv の agent(hostNetwork。Cilium からは host / remote-node に見える)だけ。
+# 出口は DNS / Lakekeeper(カタログ)/ 443(S3、initContainer の PyPI)。
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: flow-ingest
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: flow-ingest
+  ingress:
+    - fromEntities:
+        - host
+        - remote-node
+      toPorts:
+        - ports:
+            - {port: "9999", protocol: TCP}
+            - {port: "8080", protocol: TCP}
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            k8s-app: kube-dns
+            k8s:io.kubernetes.pod.namespace: kube-system
+      toPorts:
+        - ports:
+            - {port: "53", protocol: UDP}
+            - {port: "53", protocol: TCP}
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: lakekeeper
+            app.kubernetes.io/name: lakekeeper
+      toPorts:
+        - ports:
+            - {port: "8181", protocol: TCP}
+    - toEntities:
+        - world
+      toPorts:
+        - ports:
+            - {port: "443", protocol: TCP}

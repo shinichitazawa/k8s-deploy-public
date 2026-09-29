@@ -8,7 +8,7 @@
 #   (`docs/hybrid-oidc-irsa-ack.md`)。ACK CRD が存在すること。
 #
 # ★ scoped 権限の制約(ACK controller のロールに合わせる):
-#   - bucketName は必ず `st-dev-ack-*` prefix(s3-controller が許可する resource 境界)
+#   - bucketName は必ず `example-ack-*` prefix(s3-controller が許可する resource 境界)
 #   - Role/Policy は path `/ack/`(iam-controller が許可する path 境界)
 #   本 RGD はこの制約を満たすよう path を固定している。
 #
@@ -25,9 +25,9 @@ spec:
     kind: AppCloudAccess
     spec:
       name: string                              # アプリ識別子(リソース名 prefix)
-      bucketName: string                        # ★ 要 `st-dev-ack-*` prefix + グローバル一意
+      bucketName: string                        # ★ 要 `example-ack-*` prefix + グローバル一意
       serviceAccountSub: string                 # 例 system:serviceaccount:<ns>:<sa>(assume 許可対象)
-      oidcProviderArn: string | default="arn:aws:iam::111111111111:oidc-provider/st-dev-rpi0-oidc-111111111111.s3.ap-northeast-1.amazonaws.com"
+      oidcProviderArn: string | default="arn:aws:iam::111111111111:oidc-provider/example-oidc-bucket.s3.ap-northeast-1.amazonaws.com"
     status:
       bucketArn: ${bucket.status.ackResourceMetadata.arn}
       roleArn: ${role.status.ackResourceMetadata.arn}
@@ -84,8 +84,8 @@ spec:
                   "Principal": { "Federated": "${schema.spec.oidcProviderArn}" },
                   "Action": "sts:AssumeRoleWithWebIdentity",
                   "Condition": { "StringEquals": {
-                    "st-dev-rpi0-oidc-111111111111.s3.ap-northeast-1.amazonaws.com:aud": "sts.amazonaws.com",
-                    "st-dev-rpi0-oidc-111111111111.s3.ap-northeast-1.amazonaws.com:sub": "${schema.spec.serviceAccountSub}"
+                    "example-oidc-bucket.s3.ap-northeast-1.amazonaws.com:aud": "sts.amazonaws.com",
+                    "example-oidc-bucket.s3.ap-northeast-1.amazonaws.com:sub": "${schema.spec.serviceAccountSub}"
                   } } }
               ]
             }

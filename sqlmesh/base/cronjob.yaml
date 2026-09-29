@@ -1,0 +1,96 @@
+# bronze(flow-ingest が書く)から silver / gold を作る。
+#
+# **この CronJob は「ただのタイマー」で、何をいつ作るかは一切知らない。** 実行の間隔
+# (cadence)はモデル側の cron が決め、SQLMesh が「埋まっていない区間」を計算する。
+# 15 分ごとに叩くのは、モデルの cron を毎時より細かくできる余地を残すため
+# (cron が縛るのは区間の粒度ではなく鮮度)。分の値に意味を持たせない。
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: sqlmesh
+  labels:
+    app.kubernetes.io/name: sqlmesh
+spec:
+  schedule: "*/15 * * * *"
+  # 前回が終わっていなければ飛ばす(同じ state を 2 つが触らないように)。
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 840
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: sqlmesh
+        spec:
+          restartPolicy: Never
+          automountServiceAccountToken: false
+          # requirements.lock は x86_64 向け wheel のハッシュで固定してある。
+          nodeSelector:
+            kubernetes.io/hostname: lab-worker-14
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            fsGroup: 1000
+            seccompProfile:
+              type: RuntimeDefault
+          initContainers:
+            - name: prepare
+              image: &image python:3.14.7-slim-trixie@sha256:caaf356f40667c496d405780745b9ac25771c189a51dfcc42430d531ea09f8a2
+              command: ["sh", "/config/prepare.sh"]
+              env: &env
+                - {name: HOME, value: /tmp}
+                - {name: PYTHONDONTWRITEBYTECODE, value: "1"}
+                - {name: PYTHONUNBUFFERED, value: "1"}
+              securityContext: &sc
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities: {drop: ["ALL"]}
+              resources:
+                requests: {cpu: 100m, memory: 256Mi}
+                limits: {cpu: "2", memory: 1Gi}
+              volumeMounts: &mounts
+                - {name: config, mountPath: /config, readOnly: true}
+                - {name: project, mountPath: /config-project, readOnly: true}
+                - {name: site, mountPath: /opt/app}
+                - {name: work, mountPath: /work}
+                - {name: tmp, mountPath: /tmp}
+          containers:
+            - name: sqlmesh
+              image: *image
+              command: ["sh", "/config/run.sh"]
+              env:
+                - {name: HOME, value: /tmp}
+                - {name: PYTHONDONTWRITEBYTECODE, value: "1"}
+                - {name: PYTHONUNBUFFERED, value: "1"}
+                # 共有 PostgreSQL の資格情報。postgres-operator が
+                # enable_cross_namespace_secret でこの ns に作る Secret を読む。
+                - name: PGUSER
+                  valueFrom:
+                    secretKeyRef:
+                      name: sqlmesh.sqlmesh.shared-db.credentials.postgresql.acid.zalan.do
+                      key: username
+                - name: PGPASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: sqlmesh.sqlmesh.shared-db.credentials.postgresql.acid.zalan.do
+                      key: password
+              securityContext: *sc
+              resources:
+                requests: {cpu: 200m, memory: 512Mi}
+                limits: {cpu: "2", memory: 2Gi}
+              volumeMounts: *mounts
+          volumes:
+            - name: config
+              configMap: {name: sqlmesh-config}
+            - name: project
+              configMap: {name: sqlmesh-project}
+            - name: site
+              emptyDir: {sizeLimit: 2Gi}
+            - name: work
+              emptyDir: {sizeLimit: 256Mi}
+            - name: tmp
+              emptyDir: {sizeLimit: 256Mi}

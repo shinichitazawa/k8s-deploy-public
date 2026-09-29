@@ -28,9 +28,10 @@ spec:
       # SA 本体(eks.amazonaws.com/role-arn 注釈)は ARN を git に載せないため
       # クラスタ側で管理(ArgoCD 非管理)。pod-identity-webhook が env を注入する。
       serviceAccountName: n8n-bedrock
-      # CP(raspberrypi-0, arm64)に固定。cloud outpost は zero-scale/spot で揮発するため。
+      # 常時稼働の lab-worker-14(x86_64, 8C/14GB)に配置。過負荷な CP(rpi0)から退避し
+      # apiserver/DB(Patroni)の flapping 根本原因を解消するため(2026-08-22)。
       nodeSelector:
-        kubernetes.io/hostname: raspberrypi-0
+        kubernetes.io/hostname: lab-worker-14
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000
@@ -38,7 +39,7 @@ spec:
         fsGroup: 1000
       containers:
         - name: n8n
-          image: docker.n8n.io/n8nio/n8n:2.33.3
+          image: docker.n8n.io/n8nio/n8n:2.39.8
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
@@ -80,7 +81,8 @@ spec:
               value: 0.0.0.0
             - name: N8N_EDITOR_BASE_URL
               value: https://n8n.example.ts.net/
-            - name: N8N_WEBHOOK_URL
+            # n8n が読む変数名は WEBHOOK_URL(N8N_ 接頭辞なし)。webhook / 再開 URL の基底になる。
+            - name: WEBHOOK_URL
               value: https://n8n.example.ts.net/
             # Ingress(Tailscale)を 1 段挟むので X-Forwarded-* を信頼する。
             - name: N8N_PROXY_HOPS
@@ -94,10 +96,39 @@ spec:
               value: "false"
             - name: N8N_RUNNERS_ENABLED
               value: "true"
+            # --- OpenTelemetry: 実行スパン + ノードスパンを Jaeger(OTLP/HTTP)へ ---
+            # n8n 2.33 同梱の OTel モジュール。ノードスパンが出るため、AI ノード
+            # (Bedrock 呼び出し)の所要時間とワークフロー内の位置がトレースとして追える。
+            # 既定値: includeNodeSpans=true / productionExecutionsOnly=true / sampleRate=1.0。
+            # 属性は n8n.workflow.* / n8n.execution.* / n8n.node.*(gen_ai.* は n8n は出さない)。
+            - name: N8N_OTEL_ENABLED
+              value: "true"
+            - name: N8N_OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://jaeger.tracing.svc.cluster.local:4318
+            - name: N8N_OTEL_EXPORTER_SERVICE_NAME
+              value: n8n
             # keyless Bedrock: AWS Bedrock Chat Model の「Use system credentials」を許可。
             # pod-identity-webhook が注入する IRSA(web-identity)資格を base に awsAssumeRole が使う。
             - name: N8N_AWS_SYSTEM_CREDENTIALS_ACCESS_ENABLED
               value: "true"
+            # --- queue モード: 実行を worker(別 Deployment)へ委譲。ブローカは共有 Redis ---
+            # main は UI/API/webhook/トリガーを担い、実行ジョブを Redis キューへ投入する。
+            # ★ worker と同じ Redis/DB/暗号鍵を共有すること(不一致だと復号/実行不能)。
+            - name: EXECUTIONS_MODE
+              value: queue
+            - name: QUEUE_BULL_REDIS_HOST
+              value: shared-redis.infra.svc.cluster.local
+            - name: QUEUE_BULL_REDIS_PORT
+              value: "6379"
+            - name: QUEUE_BULL_REDIS_DB
+              value: "0"
+            # 共有 Redis の他テナントとキー衝突しないよう prefix を付与。
+            - name: QUEUE_BULL_PREFIX
+              value: n8n
+            # Node の旧世代ヒープ上限。コンテナ制限(2Gi)より低く置き、ヒープ枯渇時に
+            # OOMKill でなく Node 側の GC/例外で止まるようにする(2026-09-09)。
+            - name: NODE_OPTIONS
+              value: --max-old-space-size=1536
             # --- 暗号鍵: SealedSecret 由来。base の sealedsecret.yaml 有効化後に注入される ---
             - name: N8N_ENCRYPTION_KEY
               valueFrom:
@@ -115,19 +146,31 @@ spec:
               port: http
             initialDelaySeconds: 15
             periodSeconds: 10
+          # 起動猶予を liveness から分離(ライブ手動適用分を収斂: 2026-08-16)。
+          # DB 再起動後の crash recovery を含む起動が最大 10 分(60×10s)まで許容され、
+          # 起動中に liveness で SIGKILL される再起動ループを防ぐ。
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+            failureThreshold: 60
           livenessProbe:
             httpGet:
               path: /healthz
               port: http
             initialDelaySeconds: 60
             periodSeconds: 30
+            failureThreshold: 5
+          # メモリは 1Gi → 2Gi(2026-09-09)。フォームからの画像/CSV アップロードを
+          # 受け取る際にバイナリをメモリに載せるため、1Gi では OOM の余地があった。
           resources:
             requests:
               cpu: 100m
-              memory: 320Mi
+              memory: 512Mi
             limits:
               cpu: "1"
-              memory: 1Gi
+              memory: 2Gi
       volumes:
         - name: n8n-data
           emptyDir: {}

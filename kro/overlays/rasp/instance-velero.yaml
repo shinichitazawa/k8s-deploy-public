@@ -1,0 +1,13 @@
+# Kro RGD `app-cloud-access` の instance(Velero 用)。
+# バケット example-velero-bucket + scoped ポリシー + keyless ロール velero-role を合成。
+# ★ serviceAccountSub は Velero chart の実 SA 名(velero-server)に一致させること
+#   (velero:velero だと AssumeRoleWithWebIdentity が 403。2026-08-22 に是正)。
+apiVersion: kro.run/v1alpha1
+kind: AppCloudAccess
+metadata:
+  name: velero
+  namespace: infra
+spec:
+  name: velero
+  bucketName: example-velero-bucket
+  serviceAccountSub: system:serviceaccount:velero:velero-server

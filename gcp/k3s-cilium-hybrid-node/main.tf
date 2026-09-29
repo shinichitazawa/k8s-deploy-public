@@ -30,10 +30,91 @@ resource "google_compute_subnetwork" "node" {
   ip_cidr_range = var.subnet_cidr
 }
 
+# public_ip=false(完全 private)時の outbound。nat_type で方式を選ぶ。
+locals {
+  gw_nat  = !var.public_ip && var.nat_type == "gateway"
+  vm_nat  = !var.public_ip && var.nat_type == "instance"
+  nat_tag = "${var.node_name}-private"
+}
+
+# --- nat_type="gateway": マネージド Cloud NAT ---
+resource "google_compute_router" "node" {
+  count   = local.gw_nat ? 1 : 0
+  name    = "${var.node_name}-router"
+  region  = var.region
+  network = google_compute_network.node.id
+}
+
+resource "google_compute_router_nat" "node" {
+  count                              = local.gw_nat ? 1 : 0
+  name                               = "${var.node_name}-nat"
+  router                             = google_compute_router.node[0].name
+  region                             = var.region
+  nat_ip_allocate_option             = "AUTO_ONLY"
+  source_subnetwork_ip_ranges_to_nat = "ALL_SUBNETWORKS_ALL_IP_RANGES"
+}
+
+# --- nat_type="instance"(既定): 小型 NAT VM(Cloud NAT より桁安) ---
+# 外部IP付き VM 1台で ip_forward + iptables MASQUERADE。private ノードは
+# next-hop=この VM のルートで egress する。NAT GW の固定 $32/月に対し e2-micro は無料枠圏。
+resource "google_compute_firewall" "nat_from_subnet" {
+  count     = local.vm_nat ? 1 : 0
+  name      = "${var.node_name}-nat-in"
+  network   = google_compute_network.node.id
+  direction = "INGRESS"
+  allow {
+    protocol = "all"
+  }
+  source_ranges = [var.subnet_cidr]
+  target_tags   = ["${var.node_name}-nat"]
+}
+
+resource "google_compute_instance" "nat" {
+  count          = local.vm_nat ? 1 : 0
+  name           = "${var.node_name}-nat"
+  machine_type   = "e2-micro"
+  zone           = var.zone
+  can_ip_forward = true
+  tags           = ["${var.node_name}-nat"]
+
+  boot_disk {
+    initialize_params {
+      image = "debian-cloud/debian-12"
+    }
+  }
+  network_interface {
+    subnetwork = google_compute_subnetwork.node.id
+    access_config {} # NAT VM 自身は外部IP(egress の出口)
+  }
+  metadata_startup_script = <<-EOT
+    #!/bin/bash
+    sysctl -w net.ipv4.ip_forward=1
+    echo 'net.ipv4.ip_forward=1' > /etc/sysctl.d/99-nat.conf
+    IFACE=$(ip route get 8.8.8.8 | awk '{print $5; exit}')
+    iptables -t nat -A POSTROUTING -o "$IFACE" -j MASQUERADE
+  EOT
+  scheduling {
+    preemptible       = false
+    automatic_restart = true
+  }
+}
+
+resource "google_compute_route" "nat" {
+  count             = local.vm_nat ? 1 : 0
+  name              = "${var.node_name}-nat-route"
+  network           = google_compute_network.node.id
+  dest_range        = "0.0.0.0/0"
+  next_hop_instance = google_compute_instance.nat[0].self_link
+  priority          = 800 # default-internet-gateway(1000)より優先
+  tags              = [local.nat_tag]
+}
+
 # Instance Template（Spot / Ubuntu / startup-script / SA / 外部IP=egress用）
 resource "google_compute_instance_template" "node" {
   name_prefix  = "${var.node_name}-"
   machine_type = var.machine_type
+  # nat_type="instance" 時のルート対象タグ(public/gateway 時は無害)
+  tags = [local.nat_tag]
 
   disk {
     source_image = var.image
@@ -46,8 +127,12 @@ resource "google_compute_instance_template" "node" {
   network_interface {
     network    = google_compute_network.node.id
     subnetwork = google_compute_subnetwork.node.id
-    # ephemeral 外部IP: tailscale/k3s の install に必要な egress を確保（ingress は firewall 無しで閉）
-    access_config {}
+    # public_ip=true: ephemeral 外部IP で egress(ingress は firewall 無しで implied deny)。
+    # public_ip=false: 完全 private(外部IP無し)。egress は Cloud NAT 経由。
+    dynamic "access_config" {
+      for_each = var.public_ip ? [1] : []
+      content {}
+    }
   }
 
   metadata = {

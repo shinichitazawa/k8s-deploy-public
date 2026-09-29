@@ -16,9 +16,9 @@ variable "resource_group_name" {
 }
 
 variable "vm_size" {
-  description = "コスト最優先。x86 B が使えない sub では ARM burstable(Standard_B2pts_v2 等)を。"
+  description = "ARM burstable。1GiB(B2pts_v2)では k3s+Cilium のブート負荷で Cilium が起動ループに入る(2026-08 実測: load 10/2vCPU で 28 分収束せず)。4GiB 以上を推奨。"
   type        = string
-  default     = "Standard_B2pts_v2"
+  default     = "Standard_B2pls_v2"
 }
 
 variable "image_sku" {
@@ -99,4 +99,26 @@ variable "tailscale_authkey" {
   description = "Tailscale auth key。秘匿。"
   type        = string
   sensitive   = true
+}
+
+variable "ssh_ingress_cidrs" {
+  description = "SSH(22) を許可する CIDR。運用は Tailscale SSH 経由を推奨、これは fallback(AWS モジュールと同既定)"
+  type        = list(string)
+  default     = ["203.0.113.101/32"]
+}
+
+variable "public_ip" {
+  description = "true=各インスタンスに public IP を付与(共有 egress)。false=完全 private(public IP 無し、NAT Gateway 経由 egress)。既定は現状維持の true"
+  type        = bool
+  default     = true
+}
+
+variable "nat_type" {
+  description = "public_ip=false(完全private)時の egress 方式。instance=小型NAT VM(B1s・既定・安価)、gateway=マネージド NAT Gateway。public_ip=true では未使用"
+  type        = string
+  default     = "instance"
+  validation {
+    condition     = contains(["instance", "gateway"], var.nat_type)
+    error_message = "nat_type must be \"instance\" or \"gateway\"."
+  }
 }

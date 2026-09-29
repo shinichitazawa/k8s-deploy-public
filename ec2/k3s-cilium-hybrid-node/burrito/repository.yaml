@@ -1,0 +1,12 @@
+# Burrito が clone する private repo。
+# git 認証は「type: credentials.burrito.tf/repository」の Secret(url 一致で自動マッチ、下記 credential-secret.yaml)。
+apiVersion: config.terraform.padok.cloud/v1alpha1
+kind: TerraformRepository
+metadata:
+  name: k8s-deploy
+  namespace: burrito-project
+spec:
+  repository:
+    url: https://github.com/shinichitazawa/k8s-deploy
+  terraform:
+    enabled: true

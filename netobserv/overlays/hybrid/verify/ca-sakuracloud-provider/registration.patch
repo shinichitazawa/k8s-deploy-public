@@ -1,0 +1,42 @@
+diff --git a/cluster-autoscaler/cloudprovider/builder/builder_all.go b/cluster-autoscaler/cloudprovider/builder/builder_all.go
+index e98cdc6..9a55d65 100644
+--- a/cluster-autoscaler/cloudprovider/builder/builder_all.go
++++ b/cluster-autoscaler/cloudprovider/builder/builder_all.go
+@@ -47,6 +47,7 @@ import (
+ 	oci "k8s.io/autoscaler/cluster-autoscaler/cloudprovider/oci/instancepools"
+ 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider/ovhcloud"
+ 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider/rancher"
++	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider/sakuracloud"
+ 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider/scaleway"
+ 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider/tencentcloud"
+ 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider/utho"
+@@ -84,6 +85,7 @@ var AvailableCloudProviders = []string{
+ 	cloudprovider.VultrProviderName,
+ 	cloudprovider.TencentcloudProviderName,
+ 	cloudprovider.CivoProviderName,
++	cloudprovider.SakuraCloudProviderName,
+ 	cloudprovider.ScalewayProviderName,
+ 	cloudprovider.RancherProviderName,
+ 	cloudprovider.VolcengineProviderName,
+@@ -151,6 +153,8 @@ func buildCloudProvider(opts *coreoptions.AutoscalerOptions,
+ 		return tencentcloud.BuildTencentcloud(opts, do, rl)
+ 	case cloudprovider.CivoProviderName:
+ 		return civo.BuildCivo(opts, do, rl)
++	case cloudprovider.SakuraCloudProviderName:
++		return sakuracloud.BuildSakuraCloud(opts, do, rl)
+ 	case cloudprovider.ScalewayProviderName:
+ 		return scaleway.BuildScaleway(opts, do, rl)
+ 	case cloudprovider.RancherProviderName:
+diff --git a/cluster-autoscaler/cloudprovider/cloud_provider.go b/cluster-autoscaler/cloudprovider/cloud_provider.go
+index e03cbd9..33fdc2f 100644
+--- a/cluster-autoscaler/cloudprovider/cloud_provider.go
++++ b/cluster-autoscaler/cloudprovider/cloud_provider.go
+@@ -76,6 +76,8 @@ const (
+ 	LinodeProviderName = "linode"
+ 	// ScalewayProviderName gets the provider name of scaleway
+ 	ScalewayProviderName = "scaleway"
++	// SakuraCloudProviderName gets the provider name of sakura cloud
++	SakuraCloudProviderName = "sakuracloud"
+ 	// VolcengineProviderName gets the provider name of volcengine
+ 	VolcengineProviderName = "volcengine"
+ 	// VultrProviderName gets the provider name of vultr

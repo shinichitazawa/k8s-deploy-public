@@ -29,9 +29,9 @@ rpi0(k3s + Cilium kpr, CP)に、**Azure の VMSS ノード**を Tailscale 純オ
 ```bash
 cd azure/k3s-cilium-hybrid-node
 cp terraform.tfvars.example terraform.tfvars   # subscription/ssh_public_key/secrets を記入
-AWS_PROFILE=st-dev terraform init
-AWS_PROFILE=st-dev terraform plan
-AWS_PROFILE=st-dev terraform apply
+AWS_PROFILE=example-env terraform init
+AWS_PROFILE=example-env terraform plan
+AWS_PROFILE=example-env terraform apply
 ```
 
 ## 検証
@@ -54,7 +54,7 @@ sudo k3s kubectl get nodes -l cloud=azure -o wide     # Ready
 ## 破棄
 
 ```bash
-AWS_PROFILE=st-dev terraform destroy
+AWS_PROFILE=example-env terraform destroy
 sudo k3s kubectl delete node <node_name>
 ```
 

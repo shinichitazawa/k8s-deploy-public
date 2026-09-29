@@ -1,0 +1,22 @@
+# 通信量の集計。measure の名前は列名と衝突させない(衝突すると循環参照になる)。
+name: traffic
+base_object: flows
+measures:
+  - {name: flow_count,          expression: "COUNT(*)",                   type: BIGINT}
+  - {name: total_bytes,         expression: "SUM(bytes)",                 type: BIGINT}
+  - {name: total_packets,       expression: "SUM(packets)",               type: BIGINT}
+  - {name: total_retrans,       expression: "SUM(tcp_retrans_packets)",   type: BIGINT}
+  - {name: total_drops,         expression: "SUM(pkt_drop_packets)",      type: BIGINT}
+  - {name: avg_rtt_ms,          expression: "AVG(rtt_ms)",                type: DOUBLE}
+dimensions:
+  - {name: src_k8s_namespace, expression: src_k8s_namespace, type: VARCHAR}
+  - {name: dst_k8s_namespace, expression: dst_k8s_namespace, type: VARCHAR}
+  - {name: src_workload,      expression: src_workload,      type: VARCHAR}
+  - {name: dst_workload,      expression: dst_workload,      type: VARCHAR}
+  - {name: src_k8s_host_name, expression: src_k8s_host_name, type: VARCHAR}
+  - {name: dst_k8s_host_name, expression: dst_k8s_host_name, type: VARCHAR}
+  - {name: proto_name,        expression: proto_name,        type: VARCHAR}
+  - {name: is_cross_node,     expression: is_cross_node,     type: BOOLEAN}
+  - {name: is_external,       expression: is_external,       type: BOOLEAN}
+time_dimensions:
+  - {name: time_flow_start, expression: time_flow_start, type: TIMESTAMP}

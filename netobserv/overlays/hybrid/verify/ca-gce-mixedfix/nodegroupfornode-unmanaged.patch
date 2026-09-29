@@ -1,0 +1,21 @@
+diff --git a/cluster-autoscaler/cloudprovider/gce/gce_cloud_provider.go b/cluster-autoscaler/cloudprovider/gce/gce_cloud_provider.go
+index 7a7b435..d83d121 100644
+--- a/cluster-autoscaler/cloudprovider/gce/gce_cloud_provider.go
++++ b/cluster-autoscaler/cloudprovider/gce/gce_cloud_provider.go
+@@ -113,8 +113,14 @@ func (gce *GceCloudProvider) NodeGroups() []cloudprovider.NodeGroup {
+ func (gce *GceCloudProvider) NodeGroupForNode(node *apiv1.Node) (cloudprovider.NodeGroup, error) {
+ 	ref, err := GceRefFromProviderId(node.Spec.ProviderID)
+ 	if err != nil {
+-		klog.Errorf("Error extracting node.Spec.ProviderID for node %v: %v", node.Name, err)
+-		return nil, err
++		// Mixed-provider clusters (e.g. a self-hosted control plane with
++		// providerID "k3s://..." or workers from other clouds) contain nodes
++		// this provider does not manage. Per the CloudProvider contract,
++		// NodeGroupForNode should return nil for such nodes instead of an
++		// error; returning an error aborts core loops (node-info building,
++		// resource-quota tracking) for the whole cluster.
++		klog.V(4).Infof("Node %v has non-GCE providerID %q, treating as unmanaged", node.Name, node.Spec.ProviderID)
++		return nil, nil
+ 	}
+ 	mig, err := gce.gceManager.GetMigForInstance(ref)
+ 	return mig, err

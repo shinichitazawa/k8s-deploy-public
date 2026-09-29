@@ -1,36 +1,55 @@
-# External Secrets Operator (ESO) v0.10+
+# External Secrets Operator (ESO)
 # https://external-secrets.io/
+#
+# AWS Secrets Manager を単一の真実として、k8s Secret も Terraform も同じ値を参照する。
+# 秘密値をローカルの tfvars や git に置かないための土台。
 
-installCRDs: true
+# CRD はチャートに同梱されているものを使う。
+crds:
+  createClusterExternalSecret: true
+  createClusterSecretStore: true
+  # v1beta1 は提供しない(v1 が保存バージョン)。
+  unsafeServeV1Beta1: false
+
+# chart は image を "repository:tag" で組むので、tag の後ろにダイジェストを付けて固定する。
+# webhook / certController は既定でこの image を使わないため、それぞれにも同じ値を入れる。
+# ダイジェストは 2026-09-21 にレジストリ(multi-arch index)から取得。
+image:
+  tag: &esoTag v2.10.0@sha256:814117b0fd6d121b03e8ba3b6db1cecbe7449a354fc0fc9c4faf73a37aa221b1
 
 serviceAccount:
   create: true
-  # EKS Hybrid Nodes 検証時に IRSA を有効化
-  # annotations:
-  #   eks.amazonaws.com/role-arn: arn:aws:iam::<ACCOUNT>:role/<ROLE>
+  name: external-secrets
+  annotations:
+    # keyless(self-hosted IRSA)。pod-identity-webhook が AWS_ROLE_ARN と
+    # projected token を注入し、ESO は AWS SDK の既定チェーンでそれを拾う。
+    # ClusterSecretStore 側に auth を書かないのはこのため。
+    # ロールは appcloudrole-external-secrets.yaml。
+    eks.amazonaws.com/role-arn: arn:aws:iam::111111111111:role/ack/external-secrets-role
 
 resources:
   requests:
-    cpu: 50m
-    memory: 64Mi
+    cpu: 25m
+    memory: 96Mi
   limits:
-    cpu: 200m
     memory: 256Mi
 
 webhook:
+  image:
+    tag: *esoTag
   resources:
     requests:
-      cpu: 25m
-      memory: 32Mi
+      cpu: 10m
+      memory: 48Mi
     limits:
-      cpu: 100m
       memory: 128Mi
 
 certController:
+  image:
+    tag: *esoTag
   resources:
     requests:
-      cpu: 25m
-      memory: 32Mi
+      cpu: 10m
+      memory: 48Mi
     limits:
-      cpu: 100m
       memory: 128Mi

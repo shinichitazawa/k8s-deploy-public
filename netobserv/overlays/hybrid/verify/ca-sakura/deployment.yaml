@@ -1,0 +1,109 @@
+# CA-sakura: フォーク実装の sakuracloud provider を使う Cluster Autoscaler。
+# イメージはフォークからビルドした private
+# ghcr.io/shinichitazawa/cluster-autoscaler-sakuracloud:v1.35.0
+# (ソース: ca-sakuracloud-provider/ 参照。gce mixedfix パッチも同梱)。
+#
+# 前提:
+#   - Secret cluster-ops/sakuracloud-api
+#       (SAKURACLOUD_ACCESS_TOKEN / SAKURACLOUD_ACCESS_TOKEN_SECRET)
+#   - Secret cluster-ops/ghcr-pull (dockerconfigjson)
+#   - ConfigMap cluster-ops/ca-sakura-cluster-config (下記 cluster-config.yaml)
+#   - startup note(さくらの「スタートアップスクリプト」)は事前に作成し、
+#     ID を cluster-config の startupNoteID に設定する
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cluster-autoscaler-sakura
+  namespace: cluster-ops
+---
+# 既存 helm release の ClusterRole(cluster-autoscaler-gcp-gce-cluster-autoscaler)
+# と同等権限が必要。sakura 用に既存 role を再利用する。
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: cluster-autoscaler-sakura
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-autoscaler-gcp-gce-cluster-autoscaler
+subjects:
+  - kind: ServiceAccount
+    name: cluster-autoscaler-sakura
+    namespace: cluster-ops
+---
+# 再利用する ClusterRole は leases/configmaps を自分のリソース名に限定しているため、
+# sakura 用の lease と status configmap を許可する Role を追加する。
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: cluster-autoscaler-sakura
+  namespace: cluster-ops
+rules:
+  - apiGroups: [""]
+    resources: [configmaps]
+    verbs: [create]
+  - apiGroups: [coordination.k8s.io]
+    resources: [leases]
+    resourceNames: [cluster-autoscaler-sakura]
+    verbs: [get, update]
+  - apiGroups: [""]
+    resources: [configmaps]
+    resourceNames: [cluster-autoscaler-status-sakura]
+    verbs: [get, update, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: cluster-autoscaler-sakura
+  namespace: cluster-ops
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: cluster-autoscaler-sakura
+subjects:
+  - kind: ServiceAccount
+    name: cluster-autoscaler-sakura
+    namespace: cluster-ops
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cluster-autoscaler-sakura
+  namespace: cluster-ops
+  labels: {app: cluster-autoscaler-sakura}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: cluster-autoscaler-sakura}}
+  template:
+    metadata:
+      labels: {app: cluster-autoscaler-sakura}
+    spec:
+      serviceAccountName: cluster-autoscaler-sakura
+      imagePullSecrets:
+        - name: ghcr-pull
+      nodeSelector: {kubernetes.io/hostname: raspberrypi-0}
+      tolerations:
+        - {key: node-role.kubernetes.io/control-plane, operator: Exists, effect: NoSchedule}
+      containers:
+        - name: cluster-autoscaler
+          image: ghcr.io/shinichitazawa/cluster-autoscaler-sakuracloud:v1.35.0
+          command:
+            - /cluster-autoscaler
+            - --cloud-provider=sakuracloud
+            - --namespace=cluster-ops
+            - --stderrthreshold=info
+            - --v=2
+            - --scale-down-unneeded-time=3m
+            - --scale-down-delay-after-add=5m
+            - --leader-elect-resource-name=cluster-autoscaler-sakura
+            - --status-config-map-name=cluster-autoscaler-status-sakura
+          env:
+            - name: SAKURACLOUD_ACCESS_TOKEN
+              valueFrom: {secretKeyRef: {name: sakuracloud-api, key: SAKURACLOUD_ACCESS_TOKEN}}
+            - name: SAKURACLOUD_ACCESS_TOKEN_SECRET
+              valueFrom: {secretKeyRef: {name: sakuracloud-api, key: SAKURACLOUD_ACCESS_TOKEN_SECRET}}
+            - name: SAKURACLOUD_CLUSTER_CONFIG
+              valueFrom: {configMapKeyRef: {name: ca-sakura-cluster-config, key: config.json}}
+          resources:
+            requests: {cpu: 50m, memory: 128Mi}
+            limits: {memory: 384Mi}

@@ -1,0 +1,4 @@
+# pyiceberg-core(Rust)はパーティション付きテーブルへの書き込みに必須
+pyiceberg[s3fs,pyarrow,pyiceberg-core]==0.12.0
+grpcio==1.84.0
+protobuf==7.36.2

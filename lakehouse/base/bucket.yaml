@@ -1,0 +1,13 @@
+# レイクハウスの実体を置く S3 バケット(ACK s3-controller が作る)。
+#
+# バケット名は **example-ack- prefix が必須**(s3-controller の IAM 権限境界。ack/README.md)。
+# 構成:
+#   raw/netobserv/…   bronze。NetObserv FLP が書く生 JSON
+#   warehouse/…       silver/gold。Lakekeeper が管理する Iceberg テーブルの実体
+apiVersion: s3.services.k8s.aws/v1alpha1
+kind: Bucket
+metadata:
+  name: lakehouse-bucket
+  namespace: infra
+spec:
+  name: example-lakehouse-bucket

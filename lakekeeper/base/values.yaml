@@ -1,0 +1,86 @@
+# Lakekeeper(Iceberg REST カタログ)。
+#
+# 変更履歴: chart 0.4.0 / image latest-main の空スケルトンから作り直した(2026-09-17)。
+# 0.8 未満は AWS system identity(IRSA)に非対応のため、keyless にするには更新が必須だった。
+
+lakekeeper:
+  # Plus はライセンスが要る。OSS の core を使う。
+  edition: "core"
+  useLicenseSecret: false
+
+catalog:
+  image:
+    # **ダイジェスト固定**。chart は `printf "%s:%s" repository tag` で組み立てるため、
+    # repository 末尾に @sha256 を置いて tag にダイジェスト本体を渡す形にする。
+    # 固定対象: v0.13.3(chart 0.12.0 の community 既定、2026-08-17 push)。
+    repository: quay.io/lakekeeper/catalog@sha256
+    tag: db2ba6168eb107f22242fb7f2edc4016fa35e57bdcc606894e809c418e32e8dc
+  replicas: 1
+
+  # 共有 PostgreSQL と同じ lab-worker-14 に置く(rpi0 は ARM かつ使用率が高い)。
+  nodeSelector:
+    kubernetes.io/hostname: lab-worker-14
+
+  resources:
+    requests: {cpu: 100m, memory: 256Mi}
+    limits: {memory: 768Mi}
+
+  # 本体以外のコンテナにも resources を入れる。chart の既定は空で、レンダリング結果を
+  # コンテナ単位で監査して漏れに気づいた(2026-09-21)。どちらも短命。
+  initContainers:
+    checkDb:
+      resources:
+        requests: {cpu: 10m, memory: 32Mi}
+        limits: {memory: 128Mi}
+  dbMigrations:
+    resources:
+      requests: {cpu: 50m, memory: 64Mi}
+      limits: {memory: 256Mi}
+
+  extraEnv:
+    # AWS SDK の既定チェーンが web identity を拾う。これが無いと STS
+    # エンドポイントが壊れる(velero で実障害の記録あり)。
+    - name: AWS_REGION
+      value: ap-northeast-1
+    # system identity(= pod に注入された IRSA 資格情報)を warehouse の
+    # ストレージ認証に使うことを許可する。**既定は false** で、false のままだと
+    # credential-type: aws-system-identity の warehouse 作成が拒否される。
+    #   https://docs.lakekeeper.io/docs/nightly/configuration/
+    # 併用する S3_REQUIRE_EXTERNAL_ID_FOR_SYSTEM_CREDENTIALS は既定 true のままにし、
+    # external-id と assume-role-arn を必須に保つ。
+    - name: LAKEKEEPER__ENABLE_AWS_SYSTEM_CREDENTIALS
+      value: "true"
+
+# 内蔵 Postgres は使わず infra の共有 PostgreSQL(17.2)を使う。
+postgresql:
+  enabled: false
+
+externalDatabase:
+  type: postgres
+  host_read: shared-db.infra.svc.cluster.local
+  host_write: shared-db.infra.svc.cluster.local
+  port: 5432
+  database: lakekeeper
+  # Zalando postgres-operator が ns lakekeeper に作る Secret。
+  # enable_cross_namespace_secret により role 名は "lakekeeper.lakekeeper"。
+  userSecret: lakekeeper.lakekeeper.shared-db.credentials.postgresql.acid.zalan.do
+  userSecretKey: username
+  passwordSecret: lakekeeper.lakekeeper.shared-db.credentials.postgresql.acid.zalan.do
+  passwordSecretKey: password
+
+secretBackend:
+  type: "Postgres"
+  postgres:
+    # **必ず事前作成した Secret を指す**。未指定だと chart は helm の lookup で
+    # 鍵を保持しようとするが、これは ArgoCD と非互換(argo-cd#5202)で、
+    # 同期のたびに鍵が変わり保存済みシークレットが復号できなくなる。
+    encryptionKeySecret: lakekeeper-encryption-key
+    encryptionKeySecretKey: encryptionKey
+
+serviceAccount:
+  create: true
+  name: lakekeeper
+  annotations:
+    # keyless(self-hosted IRSA)。pod-identity-webhook が AWS_ROLE_ARN と
+    # projected token を注入する。ロールは lakehouse/base/appcloudrole-lakekeeper.yaml。
+    eks.amazonaws.com/role-arn: arn:aws:iam::111111111111:role/ack/lakekeeper-s3-role

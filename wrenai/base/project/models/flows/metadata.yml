@@ -1,0 +1,37 @@
+# SQLMesh が作る silver 層。1 行 = 1 フロー。
+# bronze ではなく silver を指すのは、派生列(proto_name / is_cross_node / rtt_ms)が
+# 既に実列としてあるため。同じ式を MDL 側にもう一度書かずに済む。
+name: flows
+table_reference:
+  catalog: lakehouse
+  schema: silver
+  table: flows
+columns:
+  - {name: time_flow_start, type: TIMESTAMP, is_calculated: false, not_null: true,  properties: {description: "フロー開始時刻(UTC)"}}
+  - {name: time_flow_end,   type: TIMESTAMP, is_calculated: false, not_null: false, properties: {description: "フロー終了時刻(UTC)"}}
+  - {name: duration_ms,     type: BIGINT,    is_calculated: false, not_null: false, properties: {description: "フローの継続時間(ミリ秒)"}}
+  - {name: src_k8s_host_name, type: VARCHAR, is_calculated: false, not_null: false, properties: {description: "送信元のノード名。raspberrypi-0 / lab-worker-14"}}
+  - {name: dst_k8s_host_name, type: VARCHAR, is_calculated: false, not_null: false, properties: {description: "宛先のノード名"}}
+  - {name: src_k8s_namespace, type: VARCHAR, is_calculated: false, not_null: false, properties: {description: "送信元の namespace。NULL はクラスタ外"}}
+  - {name: dst_k8s_namespace, type: VARCHAR, is_calculated: false, not_null: false, properties: {description: "宛先の namespace。NULL はクラスタ外"}}
+  - {name: src_workload,    type: VARCHAR,   is_calculated: false, not_null: false, properties: {description: "送信元のワークロード名。Pod 名ではなく owner(Deployment 名など)。k8s の情報が無ければ IP"}}
+  - {name: dst_workload,    type: VARCHAR,   is_calculated: false, not_null: false, properties: {description: "宛先のワークロード名。同上"}}
+  - {name: src_addr,        type: VARCHAR,   is_calculated: false, not_null: false, properties: {}}
+  - {name: src_port,        type: INTEGER,   is_calculated: false, not_null: false, properties: {}}
+  - {name: dst_addr,        type: VARCHAR,   is_calculated: false, not_null: false, properties: {}}
+  - {name: dst_port,        type: INTEGER,   is_calculated: false, not_null: false, properties: {description: "宛先ポート。サービスの判別に使う"}}
+  - {name: proto_name,      type: VARCHAR,   is_calculated: false, not_null: false, properties: {description: "TCP / UDP / ICMP のいずれか。それ以外のプロトコルは番号を文字列にしたもの(例: IPv6-ICMP は '58')が入る"}}
+  - {name: bytes,           type: BIGINT,    is_calculated: false, not_null: false, properties: {description: "転送バイト数"}}
+  - {name: packets,         type: BIGINT,    is_calculated: false, not_null: false, properties: {description: "パケット数"}}
+  - {name: tcp_retrans_packets, type: BIGINT, is_calculated: false, not_null: false, properties: {description: "TCP 再送パケット数。0 が正常"}}
+  - {name: pkt_drop_packets,    type: BIGINT, is_calculated: false, not_null: false, properties: {description: "カーネルがドロップしたパケット数"}}
+  - {name: pkt_drop_latest_drop_cause, type: VARCHAR, is_calculated: false, not_null: false, properties: {description: "最後のドロップ理由(SKB_DROP_REASON_*)"}}
+  - {name: rtt_ms,          type: DOUBLE,    is_calculated: false, not_null: false, properties: {description: "TCP の往復時間(ミリ秒)。TCP 以外は NULL"}}
+  - {name: dns_name,        type: VARCHAR,   is_calculated: false, not_null: false, properties: {description: "問い合わせた DNS 名。DNS 以外は NULL"}}
+  - {name: dns_latency_ms,  type: INTEGER,   is_calculated: false, not_null: false, properties: {description: "DNS の応答時間(ミリ秒)"}}
+  - {name: dns_flags_response_code, type: VARCHAR, is_calculated: false, not_null: false, properties: {description: "DNS の応答コード。NoError / NXDomain など"}}
+  - {name: is_cross_node,   type: BOOLEAN,   is_calculated: false, not_null: false, properties: {description: "ノードをまたぐ通信か。Tailscale を経由する"}}
+  - {name: is_external,     type: BOOLEAN,   is_calculated: false, not_null: false, properties: {description: "片側がクラスタ外か"}}
+cached: false
+properties:
+  description: "NetObserv の eBPF agent が採取した実トラフィック。1 行が 1 フロー。SQLMesh が bronze から毎時作る"

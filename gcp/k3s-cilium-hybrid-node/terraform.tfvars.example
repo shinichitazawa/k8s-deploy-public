@@ -1,5 +1,5 @@
 # cp して terraform.tfvars を作る（secrets を含むためコミットしない → .gitignore 済み）
-project      = "st-datalakehouse"
+project      = "example-project"
 region       = "asia-northeast1"
 machine_type = "e2-micro"
 node_name    = "gcp-cil"

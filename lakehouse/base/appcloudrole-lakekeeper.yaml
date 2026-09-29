@@ -1,0 +1,26 @@
+# Lakekeeper が Iceberg のデータファイルを読み書きするための IAM ロール(keyless)。
+# RGD AppCloudRole(kro-rgds/base/rgd-app-cloud-role.yaml)が ACK で Policy + Role を合成する。
+# pod 側は SA annotation `eks.amazonaws.com/role-arn` で受ける(pod-identity-webhook が注入)。
+#
+# AppCloudAccess(kro/base)を使わない理由: ポリシーが固定で、ArgoCD 管理外のため。
+#
+# このロール自体は S3 権限を持たない。持つのは lakekeeper-warehouse-role で、
+# ここはそれを AssumeRole する権利だけを持つ(理由は iam-warehouse-role.yaml)。
+apiVersion: kro.run/v1alpha1
+kind: AppCloudRole
+metadata:
+  name: lakekeeper-s3
+  namespace: infra
+spec:
+  name: lakekeeper-s3
+  serviceAccountSub: system:serviceaccount:lakekeeper:lakekeeper
+  policyDocument: |
+    {
+      "Version": "2012-10-17",
+      "Statement": [
+        { "Sid": "AssumeWarehouseRole",
+          "Effect": "Allow",
+          "Action": "sts:AssumeRole",
+          "Resource": "arn:aws:iam::111111111111:role/ack/lakekeeper-warehouse-role" }
+      ]
+    }

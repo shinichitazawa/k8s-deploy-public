@@ -11,6 +11,34 @@ spec:
         prometheus.io/scrape: "true"
         prometheus.io/port: "9090"
     spec:
+      # hostNetwork のまま Service 名(flow-ingest.flow-ingest.svc)を引けるようにする。
+      # 既定の ClusterFirst はホストの resolv.conf を使う(hostNetwork 時)。
+      dnsPolicy: ClusterFirstWithHostNet
+      imagePullSecrets:
+        - name: ghcr-pull   # フォーク版イメージ(private)用
+      containers:
+        - name: agent
+          # タグ :sip-retrans ではなく**実機で稼働中のダイジェスト**を固定する。
+          # git はタグ宣言のまま実機だけダイジェストで適用されており(out-of-band)、
+          # image が private でタグ→ダイジェストの同一性を確認できないため、検証済みの
+          # 稼働中ビルドを維持する。更新時はダイジェストを差し替える。
+          image: ghcr.io/shinichitazawa/netobserv-ebpf-agent-custom@sha256:279c65e0bf7b39e838b729643db0f8c6e30888ee17b2650ccbb335c0a6f8a83b
+          env:
+            # 組み込みの追加 eBPF フックを有効化。flow レコードに
+            # TimeFlowRttNs / Dns* / PktDrop* フィールドが追加される。
+            - {name: ENABLE_RTT, value: "true"}              # TCP RTT 計測
+            - {name: ENABLE_DNS_TRACKING, value: "true"}     # DNS レイテンシ/rcode
+            - {name: ENABLE_PKT_DROPS, value: "true"}        # kfree_skb tracepoint でドロップ捕捉
+            # ↓フォーク実装の独自フック(agent-sip-retrans-fork/ 参照)
+            - {name: ENABLE_TCP_RETRANS, value: "true"}      # tcp_retransmit_skb tracepoint
+            - {name: ENABLE_SIP_TRACKING, value: "true"}     # port5060 の SIP 解析
+          volumeMounts:
+            # ENABLE_PKT_DROPS の tracepoint attach に tracefs が必要
+            # (無いと "neither debugfs nor tracefs are mounted" で fatal)
+            - {name: tracefs, mountPath: /sys/kernel/tracing}
+      volumes:
+        - name: tracefs
+          hostPath: {path: /sys/kernel/tracing, type: Directory}
       tolerations:
         - operator: Exists   # CP + dedicated=<cloud>-ops の全 taint を許容
       # 小型クラウド VM のブート時は k3s+Cilium の初期化で CPU が飽和する。

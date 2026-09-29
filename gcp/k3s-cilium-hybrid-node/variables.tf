@@ -1,7 +1,7 @@
 variable "project" {
   description = "GCP プロジェクト ID"
   type        = string
-  default     = "st-datalakehouse"
+  default     = "example-project"
 }
 
 variable "region" {
@@ -27,9 +27,9 @@ variable "subnet_cidr" {
 }
 
 variable "machine_type" {
-  description = "コスト最優先。最安の共有コア e2-micro。"
+  description = "e2-micro(1GiB/共有コア)は k3s+Cilium のブート負荷で kubelet が Ready を維持できない(2026-08-14 実測: join 後 30 分以上 NodeStatusUnknown)。2vCPU/4GiB 級(e2-medium 以上)を推奨。"
   type        = string
-  default     = "e2-micro"
+  default     = "e2-medium"
 }
 
 variable "image" {
@@ -99,4 +99,20 @@ variable "tailscale_authkey" {
   description = "Tailscale auth key(tskey-...)。秘匿。コミットしない。"
   type        = string
   sensitive   = true
+}
+
+variable "public_ip" {
+  description = "true=各インスタンスに ephemeral 外部IP(共有 egress)。false=完全 private(外部IP無し、Cloud NAT 経由 egress)。既定は現状維持の true"
+  type        = bool
+  default     = true
+}
+
+variable "nat_type" {
+  description = "public_ip=false(完全private)時の egress 方式。instance=小型NAT VM(既定・安価)、gateway=マネージド Cloud NAT。public_ip=true では未使用"
+  type        = string
+  default     = "instance"
+  validation {
+    condition     = contains(["instance", "gateway"], var.nat_type)
+    error_message = "nat_type must be \"instance\" or \"gateway\"."
+  }
 }

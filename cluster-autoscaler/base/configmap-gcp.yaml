@@ -13,7 +13,7 @@ data:
     {
       "universe_domain": "googleapis.com",
       "type": "external_account",
-      "audience": "//iam.googleapis.com/projects/480825460332/locations/global/workloadIdentityPools/rpi0-pool/providers/rpi0-provider",
+      "audience": "//iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/rpi0-pool/providers/rpi0-provider",
       "subject_token_type": "urn:ietf:params:oauth:token-type:jwt",
       "token_url": "https://sts.googleapis.com/v1/token",
       "credential_source": {
@@ -22,7 +22,7 @@ data:
           "type": "text"
         }
       },
-      "service_account_impersonation_url": "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/k3s-ca@st-datalakehouse.iam.gserviceaccount.com:generateAccessToken"
+      "service_account_impersonation_url": "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/k3s-ca@example-project.iam.gserviceaccount.com:generateAccessToken"
     }
 ---
 # gce.conf。GCE CA の --cloud-config。オンプレ rpi0 は GCP metadata(169.254.169.254)へ到達できず
@@ -36,5 +36,5 @@ metadata:
 data:
   gce.conf: |
     [global]
-    project-id = st-datalakehouse
+    project-id = example-project
     local-zone = asia-northeast1-a

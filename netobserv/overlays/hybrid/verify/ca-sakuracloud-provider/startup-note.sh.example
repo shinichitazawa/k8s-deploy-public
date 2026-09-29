@@ -1,0 +1,27 @@
+#!/bin/bash
+# さくらの「スタートアップスクリプト」(note, class shell)。実物は API キーで
+# note を作成し、その ID を cluster-config の startupNoteID に設定する。
+# ***JOIN_TOKEN*** と ***TS_AUTHKEY*** は実値に置換すること(note はさくら側に
+# 保存されるため、git には置かない)。
+#
+# providerID 規約: sakuracloud://<zone>/<serverName>。
+# disk config で hostname = server 名 にしているので hostname から導出できる。
+set -uxo pipefail
+
+NODE="$(hostname -s)"
+PROVIDER_ID="sakuracloud://tk1b/$NODE"
+
+curl -fsSL https://tailscale.com/install.sh | sh
+tailscale up --accept-dns=true --ssh --hostname="$NODE" --authkey=***TS_AUTHKEY***
+for i in $(seq 1 20); do TSIP=$(tailscale ip -4 2>/dev/null | head -1); [ -n "$TSIP" ] && break; sleep 2; done
+
+for i in $(seq 1 40); do
+  (echo > /dev/tcp/raspberrypi-0.example.ts.net/6443) >/dev/null 2>&1 && break
+  sleep 3
+done
+
+curl -sfL https://get.k3s.io | \
+  INSTALL_K3S_VERSION=v1.36.2+k3s1 \
+  K3S_URL=https://raspberrypi-0.example.ts.net:6443 \
+  K3S_TOKEN='***JOIN_TOKEN***' \
+  INSTALL_K3S_EXEC="agent --node-name=$NODE --node-label=cloud=sakura --node-label=role=sakura-spot --node-ip=$TSIP --kubelet-arg=provider-id=$PROVIDER_ID --node-taint dedicated=sakura-ops:NoSchedule" sh -

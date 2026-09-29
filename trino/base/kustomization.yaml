@@ -1,0 +1,30 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: trino
+
+resources:
+  - namespace.yaml
+
+helmCharts:
+  - name: trino
+    repo: https://trinodb.github.io/charts
+    version: 1.42.2
+    releaseName: trino
+    namespace: trino
+    valuesFile: values.yaml
+
+# helm test の Pod を落とす。ArgoCD は `helm.sh/hook: test` の付いたリソースを適用しないので
+# (2026-09-21 確認: aws-ebs-csi-driver の test 用 SA / ClusterRole など 4 つは、レンダリング結果には
+# あるがクラスタに無く、Application の管理対象にも出ない)、ArgoCD 経由ならこの patch が無くても
+# test Pod は作られない。`kubectl apply -k` で直接当てたときに走らないよう残している。
+patches:
+  - target:
+      kind: Pod
+      name: trino-test-connection
+    patch: |
+      $patch: delete
+      apiVersion: v1
+      kind: Pod
+      metadata:
+        name: trino-test-connection

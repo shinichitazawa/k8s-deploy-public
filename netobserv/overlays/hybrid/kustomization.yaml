@@ -5,6 +5,12 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
   - ../../base
+  # agent が Pod/Node を参照して flow を enrich するための SA/ClusterRole/Binding。
+  - rbac-enrich.yaml
+  # Grafana のダッシュボード(ns monitoring)。Grafana の Deployment が projected volume で
+  # 必須参照しているので、netobserv 側で必ず配る(monitoring app より前の wave)。
+  - grafana/dashboard-netobserv.yaml
+  - grafana/dashboard-topology.yaml
 patches:
   - path: daemonset-patch.yaml
   - path: configmap-patch.yaml

@@ -1,0 +1,3 @@
+wrenai[trino,mcp]==0.15.0
+# wrenai 0.15.0 の mcp extra は上限が無く、mcp 2.x では wren serve mcp が起動しない
+mcp[cli]<2

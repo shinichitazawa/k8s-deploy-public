@@ -1,0 +1,87 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sip-asterisk-config
+  namespace: default
+data:
+  # 最小構成: UDP 5060 で待ち受け(エンドポイント不一致の要求には 401/404 を返す)
+  pjsip.conf: |
+    [transport-udp]
+    type=transport
+    protocol=udp
+    bind=0.0.0.0:5060
+---
+# SIP トラッカー(フォーク実装の独自 eBPF)検証用: Asterisk 受電 + SIP クライアント。
+# client は素の UDP で SIP メッセージ(OPTIONS/REGISTER/INVITE)を周期送信し、
+# Asterisk の応答(200/401/404 等)と合わせて eBPF が port 5060 を解析する。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sip-asterisk
+  namespace: default
+  labels: {app: sip-asterisk}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: sip-asterisk}}
+  template:
+    metadata: {labels: {app: sip-asterisk}}
+    spec:
+      nodeSelector: {kubernetes.io/hostname: raspberrypi-0}
+      containers:
+        - name: asterisk
+          image: andrius/asterisk:23.4.1_debian-forky
+          ports:
+            - {containerPort: 5060, protocol: UDP}
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+            limits: {memory: 256Mi}
+          volumeMounts:
+            - {name: pjsip, mountPath: /etc/asterisk/pjsip.conf, subPath: pjsip.conf}
+      volumes:
+        - name: pjsip
+          configMap: {name: sip-asterisk-config}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: sip-asterisk, namespace: default}
+spec:
+  selector: {app: sip-asterisk}
+  ports:
+    - {name: sip-udp, port: 5060, protocol: UDP}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sip-client
+  namespace: default
+  labels: {app: sip-client}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: sip-client}}
+  template:
+    metadata: {labels: {app: sip-client}}
+    spec:
+      nodeSelector: {kubernetes.io/hostname: raspberrypi-0}
+      containers:
+        - name: sip
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              H=sip-asterisk.default.svc.cluster.local
+              i=0
+              send() {
+                printf "$1 sip:$2@$H SIP/2.0\r\nVia: SIP/2.0/UDP sip-client:5060;branch=z9hG4bK$i\r\nMax-Forwards: 70\r\nFrom: <sip:tester@sip-client>;tag=t$i\r\nTo: <sip:$2@$H>\r\nCall-ID: c$i@sip-client\r\nCSeq: 1 $1\r\nContent-Length: 0\r\n\r\n" | nc -u -w 2 -p 5060 $H 5060
+              }
+              while true; do
+                i=$((i+1))
+                send OPTIONS ping
+                sleep 5
+                send REGISTER tester
+                sleep 5
+                send INVITE 100
+                sleep 10
+              done
+          resources:
+            requests: {cpu: 10m, memory: 16Mi}

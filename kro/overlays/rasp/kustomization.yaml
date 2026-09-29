@@ -4,6 +4,7 @@ kind: Kustomization
 resources:
   - ../../base
   - instance-example.yaml
+  - instance-velero.yaml
 
 patches:
   - path: deployment-patch.yaml
